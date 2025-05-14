@@ -27,12 +27,15 @@
 #include <pthread.h>
 #include <syslog.h>
 #include <SDL2/SDL.h>
-#include <turbojpeg.h> 
+#include <turbojpeg.h>
 #include "../../utils.h"
 #include "../../mjpg_streamer.h"
 
 #define OUTPUT_PLUGIN_NAME "SDL2 Viewer Plugin"
 #define DEBUG_PRINT(fmt, ...) fprintf(stderr, "VIEWER DEBUG: " fmt, ##__VA_ARGS__)
+
+// 线程本地存储TurboJPEG实例
+__thread tjhandle tjInstance = NULL;
 
 typedef struct {
     SDL_Window *window;
@@ -43,18 +46,16 @@ typedef struct {
     int initialized;
 } DisplayContext;
 
-__thread tjhandle tjInstance = NULL;
-
 static pthread_mutex_t ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
 static DisplayContext ctx = {0};
 static pthread_t worker;
 static globals *pglobal;
 static int input_number = 0;
 
-// 预分配内存池
+// 预分配内存池（按缓存行对齐）
 #define MAX_FRAME_SIZE (1920*1080*3)
-static unsigned char *jpeg_buf = NULL;
-static unsigned char *rgb_buf = NULL;
+static unsigned char *jpeg_buf __attribute__((aligned(64))) = NULL;
+static unsigned char *rgb_buf __attribute__((aligned(64))) = NULL;
 
 /* 初始化SDL窗口和渲染器 */
 static int init_sdl(int width, int height)
@@ -62,8 +63,9 @@ static int init_sdl(int width, int height)
     pthread_mutex_lock(&ctx_mutex);
     
     if (!ctx.initialized) {
-        // 强制指定嵌入式平台渲染后端
+        // 强制使用OpenGL ES 2.0渲染驱动
         SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+        SDL_SetHint(SDL_HINT_OPENGL_ES_DRIVER, "1");
         SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
 
         if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
@@ -71,10 +73,12 @@ static int init_sdl(int width, int height)
             pthread_mutex_unlock(&ctx_mutex);
             return -1;
         }
+
+        // 创建窗口时禁用全屏模式
         ctx.window = SDL_CreateWindow("MJPG-Streamer Viewer",
-            SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-            width, height, 
-            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_FULLSCREEN_DESKTOP);
+            SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED,
+            width, height,
+            SDL_WINDOW_SHOWN | SDL_WINDOW_OPENGL);
         
         if (!ctx.window) {
             fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
@@ -82,10 +86,12 @@ static int init_sdl(int width, int height)
             pthread_mutex_unlock(&ctx_mutex);
             return -1;
         }
-        
-        // 使用硬件加速渲染器
+
+        // 创建硬件加速渲染器
         ctx.renderer = SDL_CreateRenderer(ctx.window, -1, 
-            SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
+            SDL_RENDERER_ACCELERATED | 
+            SDL_RENDERER_PRESENTVSYNC |
+            SDL_RENDERER_TARGETTEXTURE);
         
         if (!ctx.renderer) {
             SDL_DestroyWindow(ctx.window);
@@ -94,12 +100,11 @@ static int init_sdl(int width, int height)
             return -1;
         }
 
-        // 根据屏幕实际尺寸调整
-        SDL_DisplayMode dm;
-        SDL_GetCurrentDisplayMode(0, &dm);
+        // 创建匹配摄像头分辨率的纹理
         ctx.texture = SDL_CreateTexture(ctx.renderer,
-            SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING,
-            dm.w, dm.h);
+            SDL_PIXELFORMAT_RGB24,
+            SDL_TEXTUREACCESS_STREAMING,
+            width, height);
         
         if (!ctx.texture) {
             SDL_DestroyRenderer(ctx.renderer);
@@ -109,6 +114,12 @@ static int init_sdl(int width, int height)
             return -1;
         }
 
+        // 设置逻辑尺寸保持宽高比
+        SDL_RenderSetLogicalSize(ctx.renderer, width, height);
+        SDL_RenderSetIntegerScale(ctx.renderer, SDL_TRUE);
+
+        ctx.width = width;
+        ctx.height = height;
         ctx.initialized = 1;
     }
     
@@ -133,6 +144,12 @@ static void process_events(void)
 /* 工作线程 */
 static void *worker_thread(void *arg)
 {
+    // 初始化线程本地TurboJPEG实例
+    if ((tjInstance = tjInitDecompress()) == NULL) {
+        OPRINT("TurboJPEG init error: %s\n", tjGetErrorStr());
+        return NULL;
+    }
+
     // 预分配内存
     jpeg_buf = malloc(MAX_FRAME_SIZE);
     rgb_buf = malloc(MAX_FRAME_SIZE);
@@ -146,12 +163,6 @@ static void *worker_thread(void *arg)
     struct timespec ts;
     const long target_frame_ns = 33333333; // 30fps
     
-    // 初始化线程本地turbojpeg实例
-    if ((tjInstance = tjInitDecompress()) == NULL) {
-        OPRINT("TurboJPEG init error: %s\n", tjGetErrorStr());
-        return NULL;
-    }
-
     while (!pglobal->stop) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         
@@ -173,20 +184,27 @@ static void *worker_thread(void *arg)
 
         /* TurboJPEG解码 */
         int width, height, jpegSubsamp;
-        if (tjDecompressHeader2(tjInstance, jpeg_buf, frame_size, 
+        if (tjDecompressHeader2(tjInstance, jpeg_buf, frame_size,
                                &width, &height, &jpegSubsamp) != 0) {
             OPRINT("tjDecompressHeader2 error: %s\n", tjGetErrorStr());
             continue;
         }
         
-        if (tjDecompress2(tjInstance, jpeg_buf, frame_size,  
+        // 启用NEON加速（ARM平台自动判断）
+        #if defined(__ARM_NEON__) || defined(__aarch64__)
+        #define TJFLAG_NEON TJFLAG_USE_NEON
+        #else
+        #define TJFLAG_NEON 0
+        #endif
+        
+        if (tjDecompress2(tjInstance, jpeg_buf, frame_size,
                          rgb_buf, width, 0, height,
-                         TJPF_RGB, TJFLAG_FASTDCT) != 0) {
+                         TJPF_RGB, TJFLAG_FASTDCT | TJFLAG_NEON) != 0) {
             OPRINT("tjDecompress2 error: %s\n", tjGetErrorStr());
             continue;
         }
 
-        /* 异步渲染（减少锁时间）*/
+        /* 更新显示 */
         if (init_sdl(width, height) == 0) {
             pthread_mutex_lock(&ctx_mutex);
             SDL_UpdateTexture(ctx.texture, NULL, rgb_buf, width * 3);
@@ -205,11 +223,11 @@ static void *worker_thread(void *arg)
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
     }
 
+    // 清理资源
     if (tjInstance) {
         tjDestroy(tjInstance);
         tjInstance = NULL;
     }
-
     free(jpeg_buf);
     free(rgb_buf);
     return NULL;
@@ -245,12 +263,5 @@ int output_stop(int id)
     SDL_Quit();
     memset(&ctx, 0, sizeof(ctx));
     pthread_mutex_unlock(&ctx_mutex);
-
-     // 强制清理线程本地存储
-    if (tjInstance) {
-        tjDestroy(tjInstance);
-        tjInstance = NULL;
-     }
-
     return 0;
 }
