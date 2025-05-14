@@ -130,6 +130,31 @@ static void cleanup_sdl_context() {
     pthread_mutex_unlock(&ctx_mutex);
 }
 
+/* 事件处理逻辑 */
+static void process_events(void) {
+    SDL_Event event;
+    while (SDL_PollEvent(&event)) {
+        if (event.type == SDL_QUIT) {
+            OPRINT("Received quit event\n");
+            pglobal->stop = 1;
+        }
+        else if (event.type == SDL_WINDOWEVENT) {
+            if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
+                pthread_mutex_lock(&ctx_mutex);
+                if (ctx.initialized) {
+                    SDL_RenderSetLogicalSize(ctx.renderer, 
+                                           event.window.data1,
+                                           event.window.data2);
+                }
+                pthread_mutex_unlock(&ctx_mutex);
+            }
+        }
+    }
+}
+
+
+
+
 /* 图像显示函数 */
 static void show_image(unsigned char *rgb_data, int width, int height) {
     /* 检查尺寸变化 */
@@ -177,7 +202,8 @@ static void *worker_thread(void *arg) {
         return NULL;
     }
 
-    while (!pglobal->stop) {
+    while (!pglobal->stop) {       
+        process_events(); // 主循环中处理事件
         /* 获取帧数据 */
         pthread_mutex_lock(&pglobal->in[input_number].db);
         pthread_cond_wait(&pglobal->in[input_number].db_update,
@@ -255,15 +281,37 @@ static void *worker_thread(void *arg) {
 
 /* 插件接口 */
 int output_init(output_parameter *param) {
-    int opt;
-    while ((opt = getopt(param->argc, param->argv, "i:")) != -1) {
-        if (opt == 'i') input_number = atoi(optarg);
+    OPRINT("Starting output_init with %d parameters\n", param->argc);
+    for(int i=0; i<param->argc; i++){
+        OPRINT("argv[%d] = %s\n", i, param->argv[i]);
     }
+
+    int opt;
+
+    while ((opt = getopt(param->argc, param->argv, "i:")) {
+        if (opt == -1) break; // 修复getopt循环条件
+
+        switch (opt) {
+        case 'i':
+            input_number = atoi(optarg);
+            OPRINT("Set input number to %d\n", input_number);
+            break;
+        default:
+            OPRINT("Unknown option: %c\n", opt);
+            return -1;
+        }
+    }
+
     pglobal = param->global;
+
+    if (!pglobal) {
+        OPRINT("Global context not available\n");
+        return -1;
+    }
 
     // 验证输入插件编号
     if (input_number >= pglobal->incnt) {
-        OPRINT("Invalid input number %d, available inputs: %d\n", input_number, pglobal->incnt);
+        OPRINT("Invalid input number %d (max %d)\n", input_number, pglobal->incnt-1);
         return -1;
     }
 
@@ -271,9 +319,20 @@ int output_init(output_parameter *param) {
 }
 
 int output_run(int id) {
-    // 在主线程初始化SDL视频子系统
-    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
-        OPRINT("SDL_Init failed: %s\n", SDL_GetError());
+    // 确保只初始化一次视频子系统
+    if (SDL_WasInit(SDL_INIT_VIDEO) == 0) {
+        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+            OPRINT("SDL_Init failed: %s\n", SDL_GetError());
+            return -1;
+        }
+        OPRINT("SDL video subsystem initialized\n");
+    } else {
+        OPRINT("SDL video already initialized\n");
+    }
+
+    // 创建线程前检查全局状态
+    if (pglobal->stop) {
+        OPRINT("Already in stop state\n");
         return -1;
     }
 
