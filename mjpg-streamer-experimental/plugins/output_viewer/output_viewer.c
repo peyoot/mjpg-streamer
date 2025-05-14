@@ -108,25 +108,21 @@ static int init_sdl_context(int width, int height) {
 }
 
 /* 安全清理资源 */
+/* 安全清理资源 */
 static void cleanup_sdl_context() {
     pthread_mutex_lock(&ctx_mutex);
     
-    if (ctx.texture) {
-        SDL_DestroyTexture(ctx.texture);
-        ctx.texture = NULL;
-    }
-    if (ctx.renderer) {
-        SDL_DestroyRenderer(ctx.renderer);
-        ctx.renderer = NULL;
-    }
-    if (ctx.window) {
-        SDL_DestroyWindow(ctx.window);
-        ctx.window = NULL;
-    }
-    SDL_QuitSubSystem(SDL_INIT_VIDEO); // 仅关闭视频子系统，避免多次初始化问题
-    ctx.initialized = 0;
+    // 释放资源（SDL自身会处理NULL参数）
+    SDL_DestroyTexture(ctx.texture);
+    SDL_DestroyRenderer(ctx.renderer);
+    SDL_DestroyWindow(ctx.window);
     
-    DEBUG_PRINT("SDL resources cleaned up\n");
+    // 关闭SDL子系统（安全可重复调用）
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    
+    // 清空结构体（隐含置NULL和initialized=0）
+    memset(&ctx, 0, sizeof(ctx));
+    
     pthread_mutex_unlock(&ctx_mutex);
 }
 
@@ -136,7 +132,9 @@ static void process_events(void) {
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
             OPRINT("Received quit event\n");
+            pthread_mutex_lock(&pglobal->db);
             pglobal->stop = 1;
+            pthread_mutex_unlock(&pglobal->db);
         }
         else if (event.type == SDL_WINDOWEVENT) {
             if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
@@ -151,8 +149,6 @@ static void process_events(void) {
         }
     }
 }
-
-
 
 
 /* 图像显示函数 */
@@ -286,9 +282,15 @@ int output_init(output_parameter *param) {
         OPRINT("argv[%d] = %s\n", i, param->argv[i]);
     }
 
+    // 处理帮助参数
+    if (param->argc >= 1 && strcmp(param->argv[0], "--help") == 0) {
+        fprintf(stderr, "Usage: %s [-i <input_number>]\n", param->argv[0]);
+        return 2;
+    }
+
     int opt;
 
-    while ((opt = getopt(param->argc, param->argv, "i:")) {
+    while ((opt = getopt(param->argc, param->argv, "i:")) != -1) {
         if (opt == -1) break; // 修复getopt循环条件
 
         switch (opt) {
