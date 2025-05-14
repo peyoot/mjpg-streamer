@@ -41,8 +41,9 @@ typedef struct {
     int width;
     int height;
     int initialized;
-    tjhandle tjInstance; 
 } DisplayContext;
+
+__thread tjhandle tjInstance = NULL;
 
 static pthread_mutex_t ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
 static DisplayContext ctx = {0};
@@ -108,11 +109,6 @@ static int init_sdl(int width, int height)
             return -1;
         }
 
-        // 初始化turbojpeg
-        if ((ctx.tjInstance = tjInitDecompress()) == NULL) {
-            fprintf(stderr, "TurboJPEG init error: %s\n", tjGetErrorStr());
-        }
-
         ctx.initialized = 1;
     }
     
@@ -150,6 +146,12 @@ static void *worker_thread(void *arg)
     struct timespec ts;
     const long target_frame_ns = 33333333; // 30fps
     
+    // 初始化线程本地turbojpeg实例
+    if ((tjInstance = tjInitDecompress()) == NULL) {
+        OPRINT("TurboJPEG init error: %s\n", tjGetErrorStr());
+        return NULL;
+    }
+
     while (!pglobal->stop) {
         clock_gettime(CLOCK_MONOTONIC, &ts);
         
@@ -171,13 +173,13 @@ static void *worker_thread(void *arg)
 
         /* TurboJPEG解码 */
         int width, height, jpegSubsamp;
-        if (tjDecompressHeader2(ctx.tjInstance, jpeg_buf, frame_size,
+        if (tjDecompressHeader2(tjInstance, jpeg_buf, frame_size, 
                                &width, &height, &jpegSubsamp) != 0) {
             OPRINT("tjDecompressHeader2 error: %s\n", tjGetErrorStr());
             continue;
         }
         
-        if (tjDecompress2(ctx.tjInstance, jpeg_buf, frame_size,
+        if (tjDecompress2(tjInstance, jpeg_buf, frame_size,  
                          rgb_buf, width, 0, height,
                          TJPF_RGB, TJFLAG_FASTDCT) != 0) {
             OPRINT("tjDecompress2 error: %s\n", tjGetErrorStr());
@@ -201,6 +203,11 @@ static void *worker_thread(void *arg)
             ts.tv_nsec -= 1e9;
         }
         clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+    }
+
+    if (tjInstance) {
+        tjDestroy(tjInstance);
+        tjInstance = NULL;
     }
 
     free(jpeg_buf);
@@ -238,5 +245,12 @@ int output_stop(int id)
     SDL_Quit();
     memset(&ctx, 0, sizeof(ctx));
     pthread_mutex_unlock(&ctx_mutex);
+
+     // 强制清理线程本地存储
+    if (tjInstance) {
+        tjDestroy(tjInstance);
+        tjInstance = NULL;
+     }
+
     return 0;
 }
