@@ -123,7 +123,7 @@ static void cleanup_sdl_context() {
         SDL_DestroyWindow(ctx.window);
         ctx.window = NULL;
     }
-    SDL_Quit();
+    SDL_QuitSubSystem(SDL_INIT_VIDEO); // 仅关闭视频子系统，避免多次初始化问题
     ctx.initialized = 0;
     
     DEBUG_PRINT("SDL resources cleaned up\n");
@@ -169,9 +169,10 @@ static void show_image(unsigned char *rgb_data, int width, int height) {
 /* JPEG解码线程 */
 static void *worker_thread(void *arg) {
     unsigned char *jpeg_frame = NULL;
+    size_t jpeg_frame_size = 4096 * 1024; // 初始缓冲区大小
     int frame_size = 0;
 
-    if ((jpeg_frame = malloc(4096 * 1024)) == NULL) {
+    if ((jpeg_frame = malloc(jpeg_frame_size)) == NULL) {
         OPRINT("JPEG buffer allocation failed\n");
         return NULL;
     }
@@ -182,6 +183,19 @@ static void *worker_thread(void *arg) {
         pthread_cond_wait(&pglobal->in[input_number].db_update,
                          &pglobal->in[input_number].db);
         frame_size = pglobal->in[input_number].size;
+
+        // 动态调整缓冲区大小
+        if (frame_size > jpeg_frame_size) {
+            unsigned char *new_buf = realloc(jpeg_frame, frame_size);
+            if (!new_buf) {
+                OPRINT("Failed to realloc jpeg buffer to %d bytes\n", frame_size);
+                pthread_mutex_unlock(&pglobal->in[input_number].db);
+                continue;
+            }
+            jpeg_frame = new_buf;
+            jpeg_frame_size = frame_size;
+        }
+
         memcpy(jpeg_frame, pglobal->in[input_number].buf, frame_size);
         pthread_mutex_unlock(&pglobal->in[input_number].db);
 
@@ -201,6 +215,7 @@ static void *worker_thread(void *arg) {
             continue;
         }
 
+        cinfo.out_color_space = JCS_RGB; // 确保输出为RGB格式
         jpeg_start_decompress(&cinfo);
         int width = cinfo.output_width;
         int height = cinfo.output_height;
@@ -216,7 +231,8 @@ static void *worker_thread(void *arg) {
         /* 逐行解码 */
         while (cinfo.output_scanline < height) {
             unsigned char *row = rgb_buffer + cinfo.output_scanline * width * 3;
-            if (jpeg_read_scanlines(&cinfo, &row, 1) != 1) {
+            JSAMPROW row_ptr[1] = {row}; // 修正行指针传递方式
+            if (jpeg_read_scanlines(&cinfo, row_ptr, 1) != 1) {
                 OPRINT("JPEG scanline error at line %d\n", cinfo.output_scanline);
                 decode_ok = 0;
                 break;
@@ -244,12 +260,26 @@ int output_init(output_parameter *param) {
         if (opt == 'i') input_number = atoi(optarg);
     }
     pglobal = param->global;
+
+    // 验证输入插件编号
+    if (input_number >= pglobal->incnt) {
+        OPRINT("Invalid input number %d, available inputs: %d\n", input_number, pglobal->incnt);
+        return -1;
+    }
+
     return 0;
 }
 
 int output_run(int id) {
+    // 在主线程初始化SDL视频子系统
+    if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        OPRINT("SDL_Init failed: %s\n", SDL_GetError());
+        return -1;
+    }
+
     if (pthread_create(&worker, NULL, worker_thread, NULL) != 0) {
         OPRINT("Worker thread creation failed\n");
+        SDL_Quit();
         return -1;
     }
     pthread_detach(worker);
@@ -259,6 +289,7 @@ int output_run(int id) {
 int output_stop(int id) {
     pglobal->stop = 1;
     cleanup_sdl_context();
+    SDL_Quit();
     return 0;
 }
 
