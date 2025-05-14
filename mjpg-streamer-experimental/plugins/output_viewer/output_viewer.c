@@ -27,7 +27,7 @@
 #include <pthread.h>
 #include <syslog.h>
 #include <SDL2/SDL.h>
-#include <jpeglib.h>
+#include <turbojpeg.h> 
 #include "../../utils.h"
 #include "../../mjpg_streamer.h"
 
@@ -41,6 +41,7 @@ typedef struct {
     int width;
     int height;
     int initialized;
+    tjhandle tjInstance; 
 } DisplayContext;
 
 static pthread_mutex_t ctx_mutex = PTHREAD_MUTEX_INITIALIZER;
@@ -49,21 +50,30 @@ static pthread_t worker;
 static globals *pglobal;
 static int input_number = 0;
 
+// 预分配内存池
+#define MAX_FRAME_SIZE (1920*1080*3)
+static unsigned char *jpeg_buf = NULL;
+static unsigned char *rgb_buf = NULL;
+
 /* 初始化SDL窗口和渲染器 */
 static int init_sdl(int width, int height)
 {
     pthread_mutex_lock(&ctx_mutex);
     
     if (!ctx.initialized) {
-        if (SDL_Init(SDL_INIT_VIDEO) != 0) {
+        // 强制指定嵌入式平台渲染后端
+        SDL_SetHint(SDL_HINT_RENDER_DRIVER, "opengles2");
+        SDL_SetHint(SDL_HINT_RENDER_SCALE_QUALITY, "1");
+
+        if (SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS) != 0) {
             fprintf(stderr, "SDL_Init Error: %s\n", SDL_GetError());
             pthread_mutex_unlock(&ctx_mutex);
             return -1;
         }
-
         ctx.window = SDL_CreateWindow("MJPG-Streamer Viewer",
             SDL_WINDOWPOS_UNDEFINED, SDL_WINDOWPOS_UNDEFINED,
-            width, height, SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE);
+            width, height, 
+            SDL_WINDOW_SHOWN | SDL_WINDOW_RESIZABLE | SDL_WINDOW_FULLSCREEN_DESKTOP);
         
         if (!ctx.window) {
             fprintf(stderr, "SDL_CreateWindow Error: %s\n", SDL_GetError());
@@ -71,7 +81,8 @@ static int init_sdl(int width, int height)
             pthread_mutex_unlock(&ctx_mutex);
             return -1;
         }
-
+        
+        // 使用硬件加速渲染器
         ctx.renderer = SDL_CreateRenderer(ctx.window, -1, 
             SDL_RENDERER_ACCELERATED | SDL_RENDERER_PRESENTVSYNC);
         
@@ -82,9 +93,12 @@ static int init_sdl(int width, int height)
             return -1;
         }
 
+        // 根据屏幕实际尺寸调整
+        SDL_DisplayMode dm;
+        SDL_GetCurrentDisplayMode(0, &dm);
         ctx.texture = SDL_CreateTexture(ctx.renderer,
             SDL_PIXELFORMAT_RGB24, SDL_TEXTUREACCESS_STREAMING,
-            width, height);
+            dm.w, dm.h);
         
         if (!ctx.texture) {
             SDL_DestroyRenderer(ctx.renderer);
@@ -94,8 +108,11 @@ static int init_sdl(int width, int height)
             return -1;
         }
 
-        ctx.width = width;
-        ctx.height = height;
+        // 初始化turbojpeg
+        if ((ctx.tjInstance = tjInitDecompress()) == NULL) {
+            fprintf(stderr, "TurboJPEG init error: %s\n", tjGetErrorStr());
+        }
+
         ctx.initialized = 1;
     }
     
@@ -108,18 +125,11 @@ static void process_events(void)
 {
     SDL_Event event;
     while (SDL_PollEvent(&event)) {
-        if (event.type == SDL_QUIT) {
+        if (event.type == SDL_QUIT || 
+           (event.type == SDL_KEYDOWN && event.key.keysym.sym == SDLK_q)) {
             pthread_mutex_lock(&pglobal->in[input_number].db);
             pglobal->stop = 1;
             pthread_mutex_unlock(&pglobal->in[input_number].db);
-        }
-        else if (event.type == SDL_WINDOWEVENT) {
-            if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
-                pthread_mutex_lock(&ctx_mutex);
-                SDL_RenderSetLogicalSize(ctx.renderer, 
-                    event.window.data1, event.window.data2);
-                pthread_mutex_unlock(&ctx_mutex);
-            }
         }
     }
 }
@@ -127,19 +137,22 @@ static void process_events(void)
 /* 工作线程 */
 static void *worker_thread(void *arg)
 {
-    struct jpeg_decompress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    unsigned char *jpeg_buf = NULL;
-    unsigned char *rgb_buf = NULL;
-    size_t buf_size = 4096 * 1024;
-
-    jpeg_buf = malloc(buf_size);
-    if (!jpeg_buf) {
-        OPRINT("Failed to allocate JPEG buffer\n");
+    // 预分配内存
+    jpeg_buf = malloc(MAX_FRAME_SIZE);
+    rgb_buf = malloc(MAX_FRAME_SIZE);
+    
+    if (!jpeg_buf || !rgb_buf) {
+        OPRINT("Memory allocation failed\n");
         return NULL;
     }
 
+    // 帧率控制
+    struct timespec ts;
+    const long target_frame_ns = 33333333; // 30fps
+    
     while (!pglobal->stop) {
+        clock_gettime(CLOCK_MONOTONIC, &ts);
+        
         process_events();
 
         /* 获取JPEG数据 */
@@ -148,43 +161,30 @@ static void *worker_thread(void *arg)
                          &pglobal->in[input_number].db);
         
         size_t frame_size = pglobal->in[input_number].size;
-        if (frame_size > buf_size) {
-            unsigned char *new_buf = realloc(jpeg_buf, frame_size);
-            if (!new_buf) {
-                OPRINT("Failed to realloc JPEG buffer\n");
-                pthread_mutex_unlock(&pglobal->in[input_number].db);
-                continue;
-            }
-            jpeg_buf = new_buf;
-            buf_size = frame_size;
+        if (frame_size > MAX_FRAME_SIZE) {
+            OPRINT("Frame too large: %zu > %d\n", frame_size, MAX_FRAME_SIZE);
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
+            continue;
         }
         memcpy(jpeg_buf, pglobal->in[input_number].buf, frame_size);
         pthread_mutex_unlock(&pglobal->in[input_number].db);
 
-        /* JPEG解码 */
-        cinfo.err = jpeg_std_error(&jerr);
-        jpeg_create_decompress(&cinfo);
-        jpeg_mem_src(&cinfo, jpeg_buf, frame_size);
+        /* TurboJPEG解码 */
+        int width, height, jpegSubsamp;
+        if (tjDecompressHeader2(ctx.tjInstance, jpeg_buf, frame_size,
+                               &width, &height, &jpegSubsamp) != 0) {
+            OPRINT("tjDecompressHeader2 error: %s\n", tjGetErrorStr());
+            continue;
+        }
         
-        if (jpeg_read_header(&cinfo, TRUE) != JPEG_HEADER_OK) {
-            jpeg_destroy_decompress(&cinfo);
+        if (tjDecompress2(ctx.tjInstance, jpeg_buf, frame_size,
+                         rgb_buf, width, 0, height,
+                         TJPF_RGB, TJFLAG_FASTDCT) != 0) {
+            OPRINT("tjDecompress2 error: %s\n", tjGetErrorStr());
             continue;
         }
 
-        cinfo.out_color_space = JCS_RGB;
-        jpeg_start_decompress(&cinfo);
-        
-        int width = cinfo.output_width;
-        int height = cinfo.output_height;
-        rgb_buf = malloc(width * height * 3);
-        
-        JSAMPROW row_ptr[1];
-        while (cinfo.output_scanline < height) {
-            row_ptr[0] = &rgb_buf[cinfo.output_scanline * width * 3];
-            jpeg_read_scanlines(&cinfo, row_ptr, 1);
-        }
-
-        /* 更新显示 */
+        /* 异步渲染（减少锁时间）*/
         if (init_sdl(width, height) == 0) {
             pthread_mutex_lock(&ctx_mutex);
             SDL_UpdateTexture(ctx.texture, NULL, rgb_buf, width * 3);
@@ -194,12 +194,17 @@ static void *worker_thread(void *arg)
             pthread_mutex_unlock(&ctx_mutex);
         }
 
-        free(rgb_buf);
-        jpeg_finish_decompress(&cinfo);
-        jpeg_destroy_decompress(&cinfo);
+        // 精确帧率控制
+        ts.tv_nsec += target_frame_ns;
+        if (ts.tv_nsec >= 1e9) {
+            ts.tv_sec++;
+            ts.tv_nsec -= 1e9;
+        }
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
     }
 
     free(jpeg_buf);
+    free(rgb_buf);
     return NULL;
 }
 
