@@ -132,9 +132,9 @@ static void process_events(void) {
     while (SDL_PollEvent(&event)) {
         if (event.type == SDL_QUIT) {
             OPRINT("Received quit event\n");
-            pthread_mutex_lock(&pglobal->db);
+            pthread_mutex_lock(&pglobal->in[input_number].db);
             pglobal->stop = 1;
-            pthread_mutex_unlock(&pglobal->db);
+            pthread_mutex_unlock(&pglobal->in[input_number].db);
         }
         else if (event.type == SDL_WINDOWEVENT) {
             if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
