@@ -15,8 +15,8 @@ if (PLUGIN_OUTPUT_VIEWER)
     MJPG_STREAMER_PLUGIN_COMPILE(output_viewer output_viewer.c)
 
     target_link_libraries(output_viewer
-        SDL2::SDL2
-        TurboJPEG::TurboJPEG
+        ${SDL2_LIBRARIES}
+        ${TurboJPEG_LIBRARIES} 
     )
 
     # ARM优化
