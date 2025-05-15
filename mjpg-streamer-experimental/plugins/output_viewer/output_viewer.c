@@ -190,16 +190,12 @@ static void *worker_thread(void *arg)
             continue;
         }
         
-        // 启用NEON加速（ARM平台自动判断）
-        #if defined(__ARM_NEON__) || defined(__aarch64__)
-        #define TJFLAG_NEON TJFLAG_USE_NEON
-        #else
-        #define TJFLAG_NEON 0
-        #endif
+        // 现代libjpeg-turbo在ARM平台编译时会自动启用NEON优化，无需手动设置标志
+        // #define TJFLAG_NEON 0 
         
         if (tjDecompress2(tjInstance, jpeg_buf, frame_size,
                          rgb_buf, width, 0, height,
-                         TJPF_RGB, TJFLAG_FASTDCT | TJFLAG_NEON) != 0) {
+                         TJPF_RGB, TJFLAG_FASTDCT) != 0) {
             OPRINT("tjDecompress2 error: %s\n", tjGetErrorStr());
             continue;
         }
