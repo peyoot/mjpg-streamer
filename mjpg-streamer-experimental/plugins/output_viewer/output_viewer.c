@@ -156,16 +156,16 @@ static void *gst_worker(void *arg) {
 }
 
 /* 插件初始化 */
-int output_init(output_parameter *param) {
-    int opt;
-    while ((opt = getopt(param->argc, param->argv, "i:")) {
-        if (opt == -1) break;
-        if (opt == 'i') input_number = atoi(optarg);
-    }
-    pglobal = param->global;
-    pthread_mutex_init(&ctx.lock, NULL);
-    return 0;
-}
+     int output_init(output_parameter *param) {
+         int opt;
+         while ((opt = getopt(param->argc, param->argv, "i:")) != -1) {
+             if (opt == -1) break;
+             if (opt == 'i') input_number = atoi(optarg);
+         }
+         pglobal = param->global;
+         pthread_mutex_init(&ctx.lock, NULL);
+         return 0;
+     }
 
 /* 启动插件 */
 int output_run(int id) {
