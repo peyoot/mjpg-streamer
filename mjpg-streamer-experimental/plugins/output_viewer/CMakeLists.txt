@@ -1,6 +1,5 @@
 # plugins/output_viewer/CMakeLists.txt
 find_package(PkgConfig REQUIRED)
-find_package(TurboJPEG REQUIRED)
 
 # 修正后的GStreamer检查（注意引号）
 pkg_check_modules(GSTREAMER REQUIRED
@@ -15,15 +14,17 @@ pkg_check_modules(WAYLAND_CLIENT REQUIRED
 )
 
 pkg_check_modules(LIBV4L2 REQUIRED libv4l2)
+pkg_check_modules(TURBOJPEG REQUIRED libturbojpeg)
 
 MJPG_STREAMER_PLUGIN_OPTION(output_viewer "GStreamer/Wayland Viewer Plugin"
-    ONLYIF GSTREAMER_FOUND WAYLAND_CLIENT_FOUND LIBV4L2_FOUND)
+    ONLYIF GSTREAMER_FOUND WAYLAND_CLIENT_FOUND LIBV4L2_FOUND TURBOJPEG_FOUND)
 
 if (PLUGIN_OUTPUT_VIEWER)
     include_directories(
         ${GSTREAMER_INCLUDE_DIRS}
         ${WAYLAND_CLIENT_INCLUDE_DIRS}
         ${LIBV4L2_INCLUDE_DIRS}
+        ${TURBOJPEG_INCLUDE_DIRS}
     )
 
     add_definitions(
@@ -37,7 +38,7 @@ if (PLUGIN_OUTPUT_VIEWER)
         ${GSTREAMER_LIBRARIES}
         ${WAYLAND_CLIENT_LIBRARIES}
         ${LIBV4L2_LIBRARIES}
-        ${TurboJPEG_LIBRARIES}
+        ${TURBOJPEG_INCLUDE_DIRS}
         pthread
         rt
     )
