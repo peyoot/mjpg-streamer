@@ -1,5 +1,6 @@
 # plugins/output_viewer/CMakeLists.txt
 find_package(PkgConfig REQUIRED)
+find_package(TurboJPEG REQUIRED)
 
 # 修正后的GStreamer检查（注意引号）
 pkg_check_modules(GSTREAMER REQUIRED
@@ -36,6 +37,7 @@ if (PLUGIN_OUTPUT_VIEWER)
         ${GSTREAMER_LIBRARIES}
         ${WAYLAND_CLIENT_LIBRARIES}
         ${LIBV4L2_LIBRARIES}
+        ${TurboJPEG_LIBRARIES}
         pthread
         rt
     )
