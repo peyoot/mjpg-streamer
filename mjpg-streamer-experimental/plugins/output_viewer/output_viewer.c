@@ -1,6 +1,6 @@
 /*******************************************************************************
 #                                                                              #
-#      MJPG-streamer GStreamer/Wayland Viewer 插件（参数解析修复版）           #
+#      MJPG-streamer GStreamer/Wayland Viewer 插件（修复版）                   #
 #                                                                              #
 *******************************************************************************/
 #include <stdio.h>
@@ -88,7 +88,7 @@ static int init_gstreamer(int width, int height, int fps) {
             pthread_mutex_unlock(&ctx.lock);
             return 0;
         }
-        DEBUG("Reconfiguring pipeline for new resolution");
+        DEBUG("Reconfiguring pipeline");
         gst_element_send_event(ctx.pipeline, gst_event_new_eos());
         gst_element_set_state(ctx.pipeline, GST_STATE_NULL);
         gst_object_unref(ctx.pipeline);
@@ -103,10 +103,9 @@ static int init_gstreamer(int width, int height, int fps) {
     snprintf(pipeline_str, sizeof(pipeline_str),
         "appsrc name=src is-live=true format=3 do-timestamp=true ! "
         "image/jpeg,width=%d,height=%d,framerate=%d/1 ! "
-        "jpegparse ! %s ! videoconvert ! "
-        "waylandsink name=wsink sync=false", 
-        width, height, fps,
-        (access("/dev/video0", F_OK) == 0) ? "v4l2jpegdec" : "jpegdec");
+        "jpegparse ! jpegdec ! videoconvert ! "
+        "waylandsink name=wsink sync=false",
+        width, height, fps);
 
     GError *err = NULL;
     ctx.pipeline = gst_parse_launch(pipeline_str, &err);
@@ -173,14 +172,23 @@ static void cleanup_resources(void) {
 }
 
 static void *gst_worker(void *arg) {
-    int width = DEFAULT_WIDTH;
-    int height = DEFAULT_HEIGHT;
-    int fps = DEFAULT_FPS;
-
     while (!pglobal->stop) {
         pthread_mutex_lock(&pglobal->in[input_number].db);
         pthread_cond_wait(&pglobal->in[input_number].db_update,
                          &pglobal->in[input_number].db);
+
+        int width = DEFAULT_WIDTH, height = DEFAULT_HEIGHT, fps = DEFAULT_FPS;
+        
+        /* 解析输入参数 */
+        input_parameter *in_param = &pglobal->in[input_number].param;
+        for (int i = 0; i < in_param->argc; i++) {
+            if (strcmp(in_param->argv[i], "-r") == 0 && (i+1) < in_param->argc) {
+                sscanf(in_param->argv[i+1], "%dx%d", &width, &height);
+            }
+            if (strcmp(in_param->argv[i], "-f") == 0 && (i+1) < in_param->argc) {
+                fps = atoi(in_param->argv[i+1]);
+            }
+        }
 
         if (init_gstreamer(width, height, fps) != 0) {
             pthread_mutex_unlock(&pglobal->in[input_number].db);
@@ -230,8 +238,6 @@ int output_init(output_parameter *param) {
 
     optind = 1;
     while ((opt = getopt_long(param->argc, param->argv, "i:w:h:f:", long_options, NULL)) != -1) {
-        if (opt == -1) break;
-
         switch (opt) {
         case 'i':
             input_number = atoi(optarg);
@@ -254,11 +260,6 @@ int output_init(output_parameter *param) {
     pglobal = param->global;
     if (input_number >= pglobal->incnt) {
         DEBUG("Invalid input number: %d", input_number);
-        return -1;
-    }
-
-    /* 初始化时直接创建管道 */
-    if (init_gstreamer(width, height, fps) != 0) {
         return -1;
     }
 
