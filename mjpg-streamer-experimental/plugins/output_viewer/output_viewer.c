@@ -1,6 +1,6 @@
 /*******************************************************************************
 #                                                                              #
-#      MJPG-streamer GStreamer/Wayland Viewer Plugin (Auto Config)             #
+#      MJPG-streamer GStreamer/Wayland Viewer 插件（参数解析版）               #
 #                                                                              #
 *******************************************************************************/
 #include <stdio.h>
@@ -38,7 +38,7 @@ static pthread_t worker_thread;
 static globals *pglobal;
 static int input_number = 0;
 
-/* Prototypes */
+/* 函数原型声明 */
 static gboolean bus_callback(GstBus *bus, GstMessage *msg, gpointer data);
 static int init_gstreamer(int width, int height, int fps);
 static void parse_input_params(int *w, int *h, int *f);
@@ -82,16 +82,9 @@ static void parse_input_params(int *w, int *h, int *f) {
 
     if (!pglobal || input_number >= pglobal->incnt) return;
 
-    /* Try to get from V4L2 input first */
-    if (pglobal->in[input_number].format == V4L2_PIX_FMT_MJPEG) {
-        *w = pglobal->in[input_number].width;
-        *h = pglobal->in[input_number].height;
-        *f = pglobal->in[input_number].fps;
-        return;
-    }
-
-    /* Fallback to parameter parsing */
     input_parameter *param = &pglobal->in[input_number].param;
+    
+    /* 解析输入参数 */
     for (int i = 0; i < param->argc; i++) {
         if (strcmp(param->argv[i], "-r") == 0 && (i+1) < param->argc) {
             sscanf(param->argv[i+1], "%dx%d", w, h);
@@ -207,13 +200,6 @@ static void *gst_worker(void *arg) {
         pthread_mutex_lock(&pglobal->in[input_number].db);
         pthread_cond_wait(&pglobal->in[input_number].db_update,
                          &pglobal->in[input_number].db);
-
-        /* Update params dynamically */
-        if (pglobal->in[input_number].format == V4L2_PIX_FMT_MJPEG) {
-            width = pglobal->in[input_number].width;
-            height = pglobal->in[input_number].height;
-            fps = pglobal->in[input_number].fps;
-        }
 
         if (init_gstreamer(width, height, fps) != 0) {
             pthread_mutex_unlock(&pglobal->in[input_number].db);

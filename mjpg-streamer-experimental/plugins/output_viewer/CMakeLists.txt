@@ -47,7 +47,6 @@ if (PLUGIN_OUTPUT_VIEWER)
     if(CMAKE_SYSTEM_NAME MATCHES "Linux")
         target_compile_options(output_viewer PRIVATE
             -O3
-            -mcpu=${PLATFORM_ARCH}
             -fstack-protector-strong
             -Wformat
             -Werror=format-security
