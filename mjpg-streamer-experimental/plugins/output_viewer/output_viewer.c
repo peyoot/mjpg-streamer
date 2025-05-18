@@ -1,6 +1,6 @@
 /*******************************************************************************
 #                                                                              #
-#      MJPG-streamer GStreamer/Wayland Viewer 插件（参数解析版）               #
+#      MJPG-streamer GStreamer/Wayland Viewer 插件（参数解析修复版）           #
 #                                                                              #
 *******************************************************************************/
 #include <stdio.h>
@@ -8,6 +8,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <getopt.h>
 #include <gst/gst.h>
 #include <gst/app/gstappsink.h>
 #include <gst/app/gstappsrc.h>
@@ -41,7 +42,6 @@ static int input_number = 0;
 /* 函数原型声明 */
 static gboolean bus_callback(GstBus *bus, GstMessage *msg, gpointer data);
 static int init_gstreamer(int width, int height, int fps);
-static void parse_input_params(int *w, int *h, int *f);
 static void cleanup_resources(void);
 static void *gst_worker(void *arg);
 
@@ -73,26 +73,6 @@ static gboolean bus_callback(GstBus *bus, GstMessage *msg, gpointer data) {
         break;
     }
     return TRUE;
-}
-
-static void parse_input_params(int *w, int *h, int *f) {
-    *w = DEFAULT_WIDTH;
-    *h = DEFAULT_HEIGHT;
-    *f = DEFAULT_FPS;
-
-    if (!pglobal || input_number >= pglobal->incnt) return;
-
-    input_parameter *param = &pglobal->in[input_number].param;
-    
-    /* 解析输入参数 */
-    for (int i = 0; i < param->argc; i++) {
-        if (strcmp(param->argv[i], "-r") == 0 && (i+1) < param->argc) {
-            sscanf(param->argv[i+1], "%dx%d", w, h);
-        }
-        if (strcmp(param->argv[i], "-f") == 0 && (i+1) < param->argc) {
-            *f = atoi(param->argv[i+1]);
-        }
-    }
 }
 
 static int init_gstreamer(int width, int height, int fps) {
@@ -193,8 +173,9 @@ static void cleanup_resources(void) {
 }
 
 static void *gst_worker(void *arg) {
-    int width, height, fps;
-    parse_input_params(&width, &height, &fps);
+    int width = DEFAULT_WIDTH;
+    int height = DEFAULT_HEIGHT;
+    int fps = DEFAULT_FPS;
 
     while (!pglobal->stop) {
         pthread_mutex_lock(&pglobal->in[input_number].db);
@@ -235,20 +216,52 @@ static void *gst_worker(void *arg) {
 
 int output_init(output_parameter *param) {
     int opt;
-    char **argv = param->argv;
-    int argc = param->argc;
-    
+    static struct option long_options[] = {
+        {"input",   required_argument, 0, 'i'},
+        {"width",   required_argument, 0, 'w'},
+        {"height",  required_argument, 0, 'h'},
+        {"fps",     required_argument, 0, 'f'},
+        {0, 0, 0, 0}
+    };
+
+    int width = DEFAULT_WIDTH;
+    int height = DEFAULT_HEIGHT;
+    int fps = DEFAULT_FPS;
+
     optind = 1;
-    while ((opt = getopt(argc, argv, "i:")) != -1) {
-        if (opt == 'i') input_number = atoi(optarg);
+    while ((opt = getopt_long(param->argc, param->argv, "i:w:h:f:", long_options, NULL)) != -1) {
+        if (opt == -1) break;
+
+        switch (opt) {
+        case 'i':
+            input_number = atoi(optarg);
+            break;
+        case 'w':
+            width = atoi(optarg);
+            break;
+        case 'h':
+            height = atoi(optarg);
+            break;
+        case 'f':
+            fps = atoi(optarg);
+            break;
+        default:
+            DEBUG("Unknown option: %c", opt);
+            return -1;
+        }
     }
-    
+
     pglobal = param->global;
     if (input_number >= pglobal->incnt) {
-        DEBUG("Invalid input: %d", input_number);
+        DEBUG("Invalid input number: %d", input_number);
         return -1;
     }
-    
+
+    /* 初始化时直接创建管道 */
+    if (init_gstreamer(width, height, fps) != 0) {
+        return -1;
+    }
+
     pthread_mutex_init(&ctx.lock, NULL);
     return 0;
 }
