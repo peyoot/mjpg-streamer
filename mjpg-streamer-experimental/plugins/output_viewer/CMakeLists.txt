@@ -39,6 +39,7 @@ if (PLUGIN_OUTPUT_VIEWER)
         ${WAYLAND_CLIENT_LIBRARIES}
         ${LIBV4L2_LIBRARIES}
         ${TURBOJPEG_INCLUDE_DIRS}
+        v4l2
         pthread
         rt
     )
