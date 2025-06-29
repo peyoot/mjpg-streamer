@@ -10,6 +10,9 @@
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
 
+// 手动声明parse函数，因为utils.h可能没有正确包含
+int parse(char *in, char **argv, int max);
+
 typedef struct {
     v4l2_dev_t v4l2;
     int width;
@@ -102,20 +105,16 @@ int input_stop(int id) {
     return 0;
 }
 
-/* 插件控制接口 */
-int input_cmd(int command, ...) {
-    va_list ap;
-    va_start(ap, command);
+/* 插件控制接口 - 使用mjpg-streamer的标准参数格式 */
+int input_cmd(int command, int parameter, int parameter2, int parameter3, char* parameter_string) {
     switch (command) {
-        case CMD_INPUT_GET_IMAGE:  // 使用正确的命令常量
-            *va_arg(ap, unsigned char**) = ctx.frame;
-            *va_arg(ap, size_t*) = ctx.frame_size;
+        case CMD_INPUT_GET_IMAGE:
+            *((unsigned char**)parameter_string) = ctx.frame;
+            *((int*)parameter) = ctx.frame_size;
             break;
         default:
-            va_end(ap);
             return -1;
     }
-    va_end(ap);
     return 0;
 }
 
