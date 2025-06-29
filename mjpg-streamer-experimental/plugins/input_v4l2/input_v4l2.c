@@ -13,6 +13,7 @@
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
 
+static char *device = "/dev/video0";
 static int width = 640;
 static int height = 480;
 static int fps = 30;
