@@ -1,172 +1,127 @@
-
-/******************************************************************************
-MJPG-streamer input plugin for V4L2 devices.
-******************************************************************************/
-
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <errno.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
 #include <linux/videodev2.h>
+#include "mjpg_streamer.h"
+#include "v4l2_utils.h"
 
-#include "../../mjpg_streamer.h"
-#include "../../utils.h"
+#define INPUT_PLUGIN_NAME "V4L2 input plugin"
+#define MAX_ARGUMENTS 32
 
+typedef struct {
+    v4l2_dev_t v4l2;
+    int width;
+    int height;
+    int fps;
+    char* device;
+    unsigned char* frame;
+    size_t frame_size;
+} context;
 
-extern void callback_new_frame(unsigned char *buffer, size_t len);
+static context ctx;
 
-static int fd = -1;
-static pthread_t capture_thread;
-static int width = 640;
-static int height = 480;
-static int fps = 30;
-static int use_yuyv = 0;
-static char device[128] = "/dev/video0";
-
-struct buffer {
-    void *start;
-    size_t length;
-};
-static struct buffer *buffers;
-static unsigned int n_buffers;
-
-static void *capture_loop(void *arg) {
-    while (1) {
-        struct v4l2_buffer buf;
-        memset(&buf, 0, sizeof(buf));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-
-        if (ioctl(fd, VIDIOC_DQBUF, &buf) == -1) {
-            perror("VIDIOC_DQBUF");
-            continue;
+/* 插件初始化 */
+int input_init(input_parameter *param) {
+    memset(&ctx, 0, sizeof(context));
+    
+    // 解析参数 (示例: -d /dev/video0 -r 640x480 -f 30)
+    char *argv[MAX_ARGUMENTS];
+    int argc = parse(param->argv[0], argv, MAX_ARGUMENTS);
+    
+    for (int i = 0; i < argc; i++) {
+        if (!strcmp(argv[i], "-d") && i+1 < argc) {
+            ctx.device = strdup(argv[++i]);
         }
-
-        if (callback_new_frame) {
-            callback_new_frame((unsigned char *)buffers[buf.index].start, buf.bytesused);
+        else if (!strcmp(argv[i], "-r") && i+1 < argc) {
+            sscanf(argv[++i], "%dx%d", &ctx.width, &ctx.height);
         }
-
-        if (ioctl(fd, VIDIOC_QBUF, &buf) == -1) {
-            perror("VIDIOC_QBUF");
-        }
-    }
-    return NULL;
-}
-
-int input_init(input_parameter *param, int id) {
-    char *arg = strtok(param->parameters, " ");
-    while (arg) {
-        if (strcmp(arg, "-d") == 0) {
-            arg = strtok(NULL, " ");
-            if (arg) strncpy(device, arg, sizeof(device) - 1);
-        } else if (strcmp(arg, "-r") == 0) {
-            arg = strtok(NULL, " ");
-            if (arg) sscanf(arg, "%dx%d", &width, &height);
-        } else if (strcmp(arg, "-f") == 0) {
-            arg = strtok(NULL, " ");
-            if (arg) fps = atoi(arg);
-        } else if (strcmp(arg, "-y") == 0) {
-            use_yuyv = 1;
-        }
-        arg = strtok(NULL, " ");
-    }
-
-    fd = open(device, O_RDWR);
-    if (fd == -1) {
-        perror("Opening video device");
-        return 1;
-    }
-
-    struct v4l2_format fmt;
-    memset(&fmt, 0, sizeof(fmt));
-    fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    fmt.fmt.pix.width = width;
-    fmt.fmt.pix.height = height;
-    fmt.fmt.pix.pixelformat = use_yuyv ? V4L2_PIX_FMT_YUYV : V4L2_PIX_FMT_MJPEG;
-    fmt.fmt.pix.field = V4L2_FIELD_ANY;
-
-    if (ioctl(fd, VIDIOC_S_FMT, &fmt) == -1) {
-        perror("Setting Pixel Format");
-        return 1;
-    }
-
-    struct v4l2_requestbuffers req;
-    memset(&req, 0, sizeof(req));
-    req.count = 4;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    req.memory = V4L2_MEMORY_MMAP;
-
-    if (ioctl(fd, VIDIOC_REQBUFS, &req) == -1) {
-        perror("Requesting Buffer");
-        return 1;
-    }
-
-    buffers = calloc(req.count, sizeof(*buffers));
-    for (n_buffers = 0; n_buffers < req.count; ++n_buffers) {
-        struct v4l2_buffer buf;
-        memset(&buf, 0, sizeof(buf));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = n_buffers;
-
-        if (ioctl(fd, VIDIOC_QUERYBUF, &buf) == -1) {
-            perror("Querying Buffer");
-            return 1;
-        }
-
-        buffers[n_buffers].length = buf.length;
-        buffers[n_buffers].start = mmap(NULL, buf.length, PROT_READ | PROT_WRITE, MAP_SHARED, fd, buf.m.offset);
-        if (buffers[n_buffers].start == MAP_FAILED) {
-            perror("mmap");
-            return 1;
+        else if (!strcmp(argv[i], "-f") && i+1 < argc) {
+            ctx.fps = atoi(argv[++i]);
         }
     }
 
-    for (unsigned int i = 0; i < n_buffers; ++i) {
-        struct v4l2_buffer buf;
-        memset(&buf, 0, sizeof(buf));
-        buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        buf.memory = V4L2_MEMORY_MMAP;
-        buf.index = i;
-        if (ioctl(fd, VIDIOC_QBUF, &buf) == -1) {
-            perror("VIDIOC_QBUF");
-            return 1;
-        }
+    // 默认值
+    if (!ctx.device) ctx.device = "/dev/video0";
+    if (!ctx.width) ctx.width = 640;
+    if (!ctx.height) ctx.height = 480;
+    if (!ctx.fps) ctx.fps = 30;
+
+    // 打开设备
+    ctx.v4l2.fd = v4l2_open(ctx.device);
+    if (ctx.v4l2.fd < 0) {
+        fprintf(stderr, "Error opening V4L2 device\n");
+        return -1;
     }
 
-    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    if (ioctl(fd, VIDIOC_STREAMON, &type) == -1) {
-        perror("VIDIOC_STREAMON");
-        return 1;
+    // 初始化设备
+    if (v4l2_init(&ctx.v4l2, ctx.width, ctx.height, ctx.fps) < 0) {
+        fprintf(stderr, "V4L2 init failed\n");
+        return -1;
     }
 
-    if (pthread_create(&capture_thread, NULL, capture_loop, NULL)) {
-        perror("Creating capture thread");
-        return 1;
+    // 开始捕获
+    if (v4l2_start_capture(&ctx.v4l2) < 0) {
+        fprintf(stderr, "Start capture failed\n");
+        return -1;
     }
 
     return 0;
 }
 
+/* 获取一帧图像 */
+int input_run() {
+    int index = v4l2_capture_frame(&ctx.v4l2);
+    if (index < 0) return -1;
+    
+    // 获取帧数据
+    ctx.frame = ctx.v4l2.buffers[index];
+    ctx.frame_size = ctx.v4l2.buf.bytesused;
+    
+    // 将缓冲重新加入队列
+    if (ioctl(ctx.v4l2.fd, VIDIOC_QBUF, &ctx.v4l2.buf) < 0) {
+        perror("Requeue buffer failed");
+        return -1;
+    }
+    
+    return 0;
+}
+
+/* 返回图像数据 */
 int input_stop() {
-    if (fd != -1) {
-        enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-        ioctl(fd, VIDIOC_STREAMOFF, &type);
-        close(fd);
-        fd = -1;
-    }
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    ioctl(ctx.v4l2.fd, VIDIOC_STREAMOFF, &type);
+    v4l2_close(&ctx.v4l2);
+    if (ctx.device) free(ctx.device);
     return 0;
 }
 
-void input_help() {
-    fprintf(stderr, "V4L2 input plugin:\n"
-                    "  -d <device>       : video device (default: /dev/video0)\n"
-                    "  -r <width>x<height>: resolution (default: 640x480)\n"
-                    "  -f <fps>          : frame rate (default: 30)\n"
-                    "  -y                : use YUYV format instead of MJPEG\n");
+/* 插件控制接口 */
+int input_cmd(int cmd, ...) {
+    va_list ap;
+    va_start(ap, cmd);
+    switch (cmd) {
+        case INPUT_GET_IMAGE:
+            *va_arg(ap, unsigned char**) = ctx.frame;
+            *va_arg(ap, int*) = ctx.frame_size;
+            break;
+        default:
+            va_end(ap);
+            return -1;
+    }
+    va_end(ap);
+    return 0;
+}
+
+/* 插件描述 */
+static input_plugin input = {
+    .name = INPUT_PLUGIN_NAME,
+    .init = input_init,
+    .run = input_run,
+    .stop = input_stop,
+    .cmd = input_cmd
+};
+
+/* 插件注册 */
+input_plugin* input_get_plugin() {
+    return &input;
 }
