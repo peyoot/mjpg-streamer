@@ -9,10 +9,10 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <sys/select.h>
-
 #include <linux/types.h>          /* for videodev2.h */
 #include <linux/videodev2.h>
 
+// 使用相对路径包含 mjpg_streamer.h
 #include "../../mjpg_streamer.h"
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))

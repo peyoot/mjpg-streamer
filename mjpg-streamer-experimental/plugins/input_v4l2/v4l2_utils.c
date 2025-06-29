@@ -1,13 +1,8 @@
 #include "v4l2_utils.h"
-#include <fcntl.h>
-#include <unistd.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <string.h>
-#include <errno.h>
+#include <stdio.h>  // 确保包含这个
 
 int v4l2_open(const char* device) {
-    int fd = open(device, O_RDWR);
+    int fd = open(device, O_RDWR | O_NONBLOCK);
     if (fd < 0) {
         fprintf(stderr, "Cannot open %s: %s\n", device, strerror(errno));
     }

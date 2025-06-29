@@ -1,8 +1,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
+#include <stdarg.h>  // 添加这个头文件
+#include <linux/videodev2.h>
 #include "v4l2_utils.h"
+#include "../../mjpg_streamer.h"  // 包含mjpg_streamer.h
+#include "../../utils.h"           // 包含parse函数的声明
 
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
@@ -40,7 +43,7 @@ int input_init(input_parameter *param) {
     }
 
     // 默认值
-    if (!ctx.device) ctx.device = "/dev/video0";
+    if (!ctx.device) ctx.device = strdup("/dev/video0");
     if (!ctx.width) ctx.width = 640;
     if (!ctx.height) ctx.height = 480;
     if (!ctx.fps) ctx.fps = 30;
@@ -85,12 +88,17 @@ int input_run() {
     return 0;
 }
 
-/* 返回图像数据 */
+/* 停止捕获 */
 int input_stop() {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    ioctl(ctx.v4l2.fd, VIDIOC_STREAMOFF, &type);
+    if (ioctl(ctx.v4l2.fd, VIDIOC_STREAMOFF, &type) < 0) {
+        perror("Stop capture failed");
+    }
     v4l2_close(&ctx.v4l2);
-    if (ctx.device) free(ctx.device);
+    if (ctx.device) {
+        free(ctx.device);
+        ctx.device = NULL;
+    }
     return 0;
 }
 
@@ -101,7 +109,7 @@ int input_cmd(int cmd, ...) {
     switch (cmd) {
         case INPUT_GET_IMAGE:
             *va_arg(ap, unsigned char**) = ctx.frame;
-            *va_arg(ap, int*) = ctx.frame_size;
+            *va_arg(ap, size_t*) = ctx.frame_size;
             break;
         default:
             va_end(ap);
@@ -112,7 +120,8 @@ int input_cmd(int cmd, ...) {
 }
 
 /* 插件描述 */
-static input_plugin input = {
+// 重命名为 input_plugin_v4l2 避免命名冲突
+static struct _input input_plugin_v4l2 = {
     .name = INPUT_PLUGIN_NAME,
     .init = input_init,
     .run = input_run,
@@ -121,6 +130,6 @@ static input_plugin input = {
 };
 
 /* 插件注册 */
-input_plugin* input_get_plugin() {
-    return &input;
+struct _input* input_get_plugin() {
+    return &input_plugin_v4l2;
 }
