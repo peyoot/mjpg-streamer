@@ -1,7 +1,11 @@
 #pragma once
 
-#include <linux/videodev2.h>
 #include <stdint.h>
+
+#include <linux/types.h>          /* for videodev2.h */
+#include <linux/videodev2.h>
+
+#include "../../mjpg_streamer.h"
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 

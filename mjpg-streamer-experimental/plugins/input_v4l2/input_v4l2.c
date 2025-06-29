@@ -1,8 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <linux/videodev2.h>
-#include "mjpg_streamer.h"
+
 #include "v4l2_utils.h"
 
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
