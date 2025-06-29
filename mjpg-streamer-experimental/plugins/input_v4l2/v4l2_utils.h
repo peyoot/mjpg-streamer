@@ -1,6 +1,14 @@
 #pragma once
 
+#include <stdio.h>
 #include <stdint.h>
+#include <string.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <sys/select.h>
 
 #include <linux/types.h>          /* for videodev2.h */
 #include <linux/videodev2.h>
