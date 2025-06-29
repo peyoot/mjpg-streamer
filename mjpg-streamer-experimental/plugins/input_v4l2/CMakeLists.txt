@@ -26,4 +26,9 @@ if (PLUGIN_INPUT_V4L2)
     else()
         message(WARNING "libjpeg not found, MJPEG support disabled")
     endif()
+    
+    # 添加对utils的链接
+    if(TARGET ${CMAKE_PROJECT_NAME}_utils)
+        target_link_libraries(input_v4l2 ${CMAKE_PROJECT_NAME}_utils)
+    endif()
 endif()

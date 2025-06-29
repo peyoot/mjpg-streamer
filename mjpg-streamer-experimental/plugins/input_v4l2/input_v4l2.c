@@ -1,10 +1,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>  // 添加这个头文件
+#include <stdarg.h>
 #include <linux/videodev2.h>
 #include "v4l2_utils.h"
-#include "../../mjpg_streamer.h"  // 包含mjpg_streamer.h
+#include "../../mjpg_streamer.h"
 #include "../../utils.h"           // 包含parse函数的声明
 
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
@@ -22,8 +22,8 @@ typedef struct {
 
 static context ctx;
 
-/* 插件初始化 */
-int input_init(input_parameter *param) {
+/* 插件初始化 - 修正函数签名 */
+int input_init(input_parameter *param, int id) {
     memset(&ctx, 0, sizeof(context));
     
     // 解析参数 (示例: -d /dev/video0 -r 640x480 -f 30)
@@ -70,8 +70,8 @@ int input_init(input_parameter *param) {
     return 0;
 }
 
-/* 获取一帧图像 */
-int input_run() {
+/* 获取一帧图像 - 修正函数签名 */
+int input_run(int id) {
     int index = v4l2_capture_frame(&ctx.v4l2);
     if (index < 0) return -1;
     
@@ -88,8 +88,8 @@ int input_run() {
     return 0;
 }
 
-/* 停止捕获 */
-int input_stop() {
+/* 停止捕获 - 修正函数签名 */
+int input_stop(int id) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(ctx.v4l2.fd, VIDIOC_STREAMOFF, &type) < 0) {
         perror("Stop capture failed");
@@ -103,11 +103,11 @@ int input_stop() {
 }
 
 /* 插件控制接口 */
-int input_cmd(int cmd, ...) {
+int input_cmd(int command, ...) {
     va_list ap;
-    va_start(ap, cmd);
-    switch (cmd) {
-        case INPUT_GET_IMAGE:
+    va_start(ap, command);
+    switch (command) {
+        case CMD_INPUT_GET_IMAGE:  // 使用正确的命令常量
             *va_arg(ap, unsigned char**) = ctx.frame;
             *va_arg(ap, size_t*) = ctx.frame_size;
             break;
@@ -120,7 +120,6 @@ int input_cmd(int cmd, ...) {
 }
 
 /* 插件描述 */
-// 重命名为 input_plugin_v4l2 避免命名冲突
 static struct _input input_plugin_v4l2 = {
     .name = INPUT_PLUGIN_NAME,
     .init = input_init,
