@@ -9,9 +9,10 @@
 #include <sys/ioctl.h>
 #include <sys/mman.h>
 #include <pthread.h>
-#include "input.h"
 
-static char *device = "/dev/video0";
+#include "../../mjpg_streamer.h"
+#include "../../utils.h"
+
 static int width = 640;
 static int height = 480;
 static int fps = 30;
