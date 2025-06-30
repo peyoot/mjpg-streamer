@@ -14,7 +14,6 @@ if (PLUGIN_INPUT_V4L2)
     MJPG_STREAMER_PLUGIN_COMPILE(input_v4l2 
         input_v4l2.c
         v4l2_utils.c
-        jpeg_utils.c
     )
     
     # 链接库

@@ -1,5 +1,8 @@
 #include "v4l2_utils.h"
-#include <stdio.h>  // 确保包含这个
+#include <sys/ioctl.h>
+#include <sys/mman.h>
+#include <errno.h>
+#include <string.h>
 
 int v4l2_open(const char* device) {
     int fd = open(device, O_RDWR | O_NONBLOCK);
@@ -19,8 +22,13 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps) {
     dev->fmt.fmt.pix.field = V4L2_FIELD_ANY;
     
     if (ioctl(dev->fd, VIDIOC_S_FMT, &dev->fmt) < 0) {
-        perror("Setting format failed");
-        return -1;
+        // 如果 MJPEG 失败，尝试 YUYV
+        fprintf(stderr, "MJPEG format not supported, trying YUYV\n");
+        dev->fmt.fmt.pix.pixelformat = V4L2_PIX_FMT_YUYV;
+        if (ioctl(dev->fd, VIDIOC_S_FMT, &dev->fmt) < 0) {
+            perror("Setting format failed");
+            return -1;
+        }
     }
 
     // 设置帧率

@@ -15,6 +15,9 @@
 // 使用相对路径包含 mjpg_streamer.h
 #include "../../mjpg_streamer.h"
 
+#define V4L2_PIX_FMT_YUYV v4l2_fourcc('Y', 'U', 'Y', 'V')
+#define V4L2_PIX_FMT_MJPEG v4l2_fourcc('M', 'J', 'P', 'G')
+
 #define CLEAR(x) memset(&(x), 0, sizeof(x))
 
 typedef struct {

@@ -1,16 +1,21 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdarg.h>
+#include <stdint.h>
 #include <linux/videodev2.h>
 #include "v4l2_utils.h"
 #include "../../mjpg_streamer.h"
-#include "../../utils.h"           // 包含parse函数的声明
+#include "../../utils.h"
+
+// 手动定义命令常量（参考 input_uvc）
+#ifndef CMD_INPUT_GET_IMAGE
+#define CMD_INPUT_GET_IMAGE 0
+#endif
 
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
 
-// 手动声明parse函数，因为utils.h可能没有正确包含
+// 手动声明parse函数
 int parse(char *in, char **argv, int max);
 
 typedef struct {
@@ -25,11 +30,11 @@ typedef struct {
 
 static context ctx;
 
-/* 插件初始化 - 修正函数签名 */
+/* 插件初始化 */
 int input_init(input_parameter *param, int id) {
     memset(&ctx, 0, sizeof(context));
     
-    // 解析参数 (示例: -d /dev/video0 -r 640x480 -f 30)
+    // 解析参数
     char *argv[MAX_ARGUMENTS];
     int argc = parse(param->argv[0], argv, MAX_ARGUMENTS);
     
@@ -54,7 +59,7 @@ int input_init(input_parameter *param, int id) {
     // 打开设备
     ctx.v4l2.fd = v4l2_open(ctx.device);
     if (ctx.v4l2.fd < 0) {
-        fprintf(stderr, "Error opening V4L2 device\n");
+        fprintf(stderr, "Error opening V4L2 device %s\n", ctx.device);
         return -1;
     }
 
@@ -73,7 +78,7 @@ int input_init(input_parameter *param, int id) {
     return 0;
 }
 
-/* 获取一帧图像 - 修正函数签名 */
+/* 获取一帧图像 */
 int input_run(int id) {
     int index = v4l2_capture_frame(&ctx.v4l2);
     if (index < 0) return -1;
@@ -91,7 +96,7 @@ int input_run(int id) {
     return 0;
 }
 
-/* 停止捕获 - 修正函数签名 */
+/* 停止捕获 */
 int input_stop(int id) {
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(ctx.v4l2.fd, VIDIOC_STREAMOFF, &type) < 0) {
@@ -105,12 +110,12 @@ int input_stop(int id) {
     return 0;
 }
 
-/* 插件控制接口 - 使用mjpg-streamer的标准参数格式 */
-int input_cmd(int command, int parameter, int parameter2, int parameter3, char* parameter_string) {
+/* 插件控制接口 - 使用匹配的函数签名 */
+int input_cmd(int command, unsigned int parameter, unsigned int parameter2, int parameter3, char* parameter_string) {
     switch (command) {
         case CMD_INPUT_GET_IMAGE:
             *((unsigned char**)parameter_string) = ctx.frame;
-            *((int*)parameter) = ctx.frame_size;
+            *((int*)(uintptr_t)parameter) = ctx.frame_size;
             break;
         default:
             return -1;
