@@ -5,6 +5,7 @@
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/ioctl.h>
+#include <getopt.h>
 #include <linux/videodev2.h>
 #include "v4l2_utils.h"
 #include "jpeg_utils.h"
@@ -19,9 +20,6 @@
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
 #define JPEG_BUFFER_SIZE (2 * 1024 * 1024) // 2MB JPEG 缓冲区
-
-// 手动声明parse函数
-int parse(char *in, char **argv, int max);
 
 typedef struct {
     v4l2_dev_t v4l2;
@@ -41,21 +39,55 @@ static context ctx;
 int input_init(input_parameter *param, int id) {
     memset(&ctx, 0, sizeof(context));
     
-    // 解析参数
+    int argc = 0;
     char *argv[MAX_ARGUMENTS];
-    int argc = parse(param->argv[0], argv, MAX_ARGUMENTS);
+    char *token, *saveptr;
     
-    for (int i = 0; i < argc; i++) {
-        if (!strcmp(argv[i], "-d") && i+1 < argc) {
-            ctx.device = strdup(argv[++i]);
-        }
-        else if (!strcmp(argv[i], "-r") && i+1 < argc) {
-            sscanf(argv[++i], "%dx%d", &ctx.width, &ctx.height);
-        }
-        else if (!strcmp(argv[i], "-f") && i+1 < argc) {
-            ctx.fps = atoi(argv[++i]);
+    // 手动分割参数字符串
+    char *input = strdup(param->argv[0]);
+    if (!input) {
+        fprintf(stderr, "Memory allocation failed\n");
+        return -1;
+    }
+    
+    token = strtok_r(input, " ", &saveptr);
+    while (token != NULL && argc < MAX_ARGUMENTS) {
+        argv[argc++] = token;
+        token = strtok_r(NULL, " ", &saveptr);
+    }
+    
+    // 定义选项
+    static struct option long_options[] = {
+        {"device", required_argument, 0, 'd'},
+        {"resolution", required_argument, 0, 'r'},
+        {"fps", required_argument, 0, 'f'},
+        {0, 0, 0, 0}
+    };
+    
+    // 重置 getopt
+    reset_getopt();
+    
+    // 解析选项
+    int c;
+    while ((c = getopt_long(argc, argv, "d:r:f:", long_options, NULL)) != -1) {
+        switch (c) {
+            case 'd':
+                ctx.device = strdup(optarg);
+                break;
+            case 'r':
+                parse_resolution_opt(optarg, &ctx.width, &ctx.height);
+                break;
+            case 'f':
+                ctx.fps = atoi(optarg);
+                break;
+            default:
+                fprintf(stderr, "Unknown option: %c\n", c);
+                free(input);
+                return -1;
         }
     }
+    
+    free(input);
 
     // 默认值
     if (!ctx.device) ctx.device = strdup("/dev/video0");
