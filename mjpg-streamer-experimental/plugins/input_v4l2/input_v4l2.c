@@ -3,8 +3,8 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
-#include <unistd.h>           // 添加 unistd.h 解决 optind 问题
-#include <sys/ioctl.h>        // 添加 ioctl 声明
+#include <unistd.h>
+#include <sys/ioctl.h>
 #include <linux/videodev2.h>
 #include "v4l2_utils.h"
 #include "jpeg_utils.h"

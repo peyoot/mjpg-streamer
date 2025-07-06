@@ -1,5 +1,9 @@
 // plugins/input_v4l2/jpeg_utils.c
 #include "jpeg_utils.h"
+#include "v4l2_utils.h"  // 添加这个头文件以获取 V4L2 格式定义
+#include <stdio.h>
+#include <stdlib.h>
+#include <jpeglib.h>
 
 int compress_yuyv_to_jpeg(unsigned char *dst, size_t dst_size, 
                          unsigned char *src, int width, int height, int quality) {
@@ -70,14 +74,4 @@ int compress_yuyv_to_jpeg(unsigned char *dst, size_t dst_size,
     jpeg_destroy_compress(&cinfo);
     free(line_buffer);
     return dst_size;
-}
-
-int compress_image_to_jpeg(unsigned char *dst, size_t dst_size, 
-                         unsigned char *src, int width, int height, 
-                         int format, int quality) {
-    if (format == V4L2_PIX_FMT_YUYV) {
-        return compress_yuyv_to_jpeg(dst, dst_size, src, width, height, quality);
-    }
-    // 添加其他格式支持
-    return -1;
 }

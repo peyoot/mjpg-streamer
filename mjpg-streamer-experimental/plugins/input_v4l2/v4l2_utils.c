@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <sys/select.h>  // 添加 select 头文件
+#include <stdint.h>      // 确保 uint32_t 定义可用
 
 int v4l2_open(const char* device) {
     int fd = open(device, O_RDWR | O_NONBLOCK);
