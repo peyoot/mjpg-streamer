@@ -19,7 +19,7 @@
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
 #define JPEG_BUFFER_SIZE (2 * 1024 * 1024) // 2MB JPEG buffer
-#define MAX_BUFFERS 4  // 最大缓冲区数量
+#define MAX_BUFFERS 4
 
 typedef struct {
     v4l2_dev_t v4l2;
@@ -29,19 +29,25 @@ typedef struct {
     char* device;
     unsigned char* frame;
     size_t frame_size;
-    int need_conversion;  // 1=需要转换, 0=不需要
-    unsigned char* jpeg_buffer; // JPEG转换缓冲区
+    int need_conversion;
+    unsigned char* jpeg_buffer;
+    globals *global;  // 存储全局指针
+    int instance_id;  // 存储实例ID
 } context;
 
 /* 插件初始化 */
 int input_init(input_parameter *param, int id) {
-    context *ctx = calloc(1, sizeof(context));  // 动态分配上下文
+    context *ctx = calloc(1, sizeof(context));
     if (!ctx) {
         fprintf(stderr, "Memory allocation failed\n");
         return -1;
     }
     
-    // 存储上下文指针
+    // 保存全局指针和实例ID
+    ctx->global = param->global;
+    ctx->instance_id = id;
+    
+    // 将上下文存储到全局结构中
     param->global->in[id].context = ctx;
     
     int argc = 0;
@@ -127,7 +133,7 @@ int input_init(input_parameter *param, int id) {
         ctx->need_conversion = 0;
     }
     
-    // 分配JPEG缓冲区（如果需要转换）
+    // 分配JPEG缓冲区
     if (ctx->need_conversion) {
         ctx->jpeg_buffer = malloc(JPEG_BUFFER_SIZE);
         if (!ctx->jpeg_buffer) {
@@ -154,10 +160,10 @@ int input_init(input_parameter *param, int id) {
 
 /* 获取一帧图像 */
 int input_run(int id) {
-    globals *global = get_globals();
-    context *ctx = (context *)global->in[id].context;
+    // 直接从全局结构中获取上下文
+    context *ctx = (context *)global.in[id].context;
     if (!ctx) {
-        fprintf(stderr, "Context is NULL\n");
+        fprintf(stderr, "Context is NULL for instance %d\n", id);
         return -1;
     }
 
@@ -205,8 +211,8 @@ int input_run(int id) {
 
 /* 停止捕获 */
 int input_stop(int id) {
-    globals *global = get_globals();
-    context *ctx = (context *)global->in[id].context;
+    // 直接从全局结构中获取上下文
+    context *ctx = (context *)global.in[id].context;
     if (!ctx) return 0;
 
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -221,18 +227,18 @@ int input_stop(int id) {
     free(ctx);
     
     // 清空全局指针
-    global->in[id].context = NULL;
+    global.in[id].context = NULL;
     
     return 0;
 }
 
 /* 插件控制接口 */
 int input_cmd(int command, unsigned int parameter, unsigned int parameter2, int parameter3, char* parameter_string) {
-    globals *global = get_globals();
-    context *ctx = (context *)global->in[0].context;  // 使用第一个实例
+    // 默认使用第一个输入插件的上下文
+    context *ctx = (context *)global.in[0].context;
     
     if (!ctx || !ctx->frame) {
-        return -1;  // 安全保护
+        return -1;
     }
     
     switch (command) {
