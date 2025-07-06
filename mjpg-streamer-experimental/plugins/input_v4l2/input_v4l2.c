@@ -3,9 +3,11 @@
 #include <string.h>
 #include <stdarg.h>
 #include <stdint.h>
+#include <unistd.h>           // 添加 unistd.h 解决 optind 问题
+#include <sys/ioctl.h>        // 添加 ioctl 声明
 #include <linux/videodev2.h>
 #include "v4l2_utils.h"
-#include "jpeg_utils.h"  // 包含 JPEG 转换功能
+#include "jpeg_utils.h"
 #include "../../mjpg_streamer.h"
 #include "../../utils.h"
 
@@ -163,22 +165,20 @@ int input_stop(int id) {
     return 0;
 }
 
-/* 插件控制接口 - 使用可变参数版本 */
-int input_cmd(int cmd, ...) {
-    va_list ap;
-    va_start(ap, cmd);
-    
-    switch (cmd) {
+/* 插件控制接口 - 使用匹配的函数签名 */
+int input_cmd(int command, unsigned int parameter, unsigned int parameter2, int parameter3, char* parameter_string) {
+    switch (command) {
         case INPUT_GET_IMAGE:
-            *va_arg(ap, unsigned char**) = ctx.frame;
-            *va_arg(ap, int*) = ctx.frame_size;
+            if (parameter_string) {
+                *((unsigned char**)parameter_string) = ctx.frame;
+            }
+            if (parameter) {
+                *((int*)(uintptr_t)parameter) = ctx.frame_size;
+            }
             break;
         default:
-            va_end(ap);
             return -1;
     }
-    
-    va_end(ap);
     return 0;
 }
 

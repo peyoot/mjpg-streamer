@@ -1,6 +1,7 @@
 #pragma once
 
 #include <linux/videodev2.h>
+#include <string.h>  // 添加 memset 声明
 
 // 确保必要的像素格式已定义
 #ifndef V4L2_PIX_FMT_YUYV

@@ -1,107 +1,168 @@
-// jpeg_utils.c
-#include "jpeg_utils.h"
+#include "v4l2_utils.h"
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <string.h>
+#include <stdio.h>
+#include <sys/select.h>  // 添加 select 头文件
 
-int compress_yuyv_to_jpeg(unsigned char *dst, size_t dst_size, 
-                         unsigned char *src, int width, int height, int quality) {
-    struct jpeg_compress_struct cinfo;
-    struct jpeg_error_mgr jerr;
-    JSAMPROW row_pointer[1];
-    int row_stride;
-    unsigned char *line_buffer, *yuyv;
-    int z;
-    unsigned long jpeg_size = 0;
+int v4l2_open(const char* device) {
+    int fd = open(device, O_RDWR | O_NONBLOCK);
+    if (fd < 0) {
+        fprintf(stderr, "Cannot open %s: %s\n", device, strerror(errno));
+    }
+    return fd;
+}
 
-    // 创建错误处理器
-    cinfo.err = jpeg_std_error(&jerr);
-    jpeg_create_compress(&cinfo);
+int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
+    // 设置格式
+    CLEAR(dev->fmt);
+    dev->fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     
-    // 设置内存目标
-    jpeg_mem_dest(&cinfo, &dst, &jpeg_size);
-    dst_size = jpeg_size; // 更新实际使用的缓冲区大小
-
-    // 设置图像参数
-    cinfo.image_width = width;
-    cinfo.image_height = height;
-    cinfo.input_components = 3; // RGB
-    cinfo.in_color_space = JCS_RGB;
-
-    // 设置默认压缩参数
-    jpeg_set_defaults(&cinfo);
+    dev->fmt.fmt.pix.width = width;
+    dev->fmt.fmt.pix.height = height;
+    dev->fmt.fmt.pix.pixelformat = format;
+    dev->fmt.fmt.pix.field = V4L2_FIELD_ANY;
     
-    // 设置质量
-    jpeg_set_quality(&cinfo, quality, TRUE);
-    
-    // 开始压缩
-    jpeg_start_compress(&cinfo, TRUE);
-
-    // 分配行缓冲区
-    line_buffer = malloc(width * 3);
-    if (!line_buffer) {
-        fprintf(stderr, "Failed to allocate line buffer\n");
-        jpeg_destroy_compress(&cinfo);
+    if (ioctl(dev->fd, VIDIOC_S_FMT, &dev->fmt) < 0) {
+        perror("Setting format failed");
         return -1;
     }
     
-    // YUYV 格式：每个像素2字节（Y0, U, Y1, V）
-    row_stride = width * 2;
-
-    // 逐行处理
-    while (cinfo.next_scanline < cinfo.image_height) {
-        yuyv = src + cinfo.next_scanline * row_stride;
-        
-        for (z = 0; z < width; z++) {
-            int Y, U, V, R, G, B;
-            int index = z * 2;
-
-            // 获取 YUV 值
-            if (z % 2 == 0) {
-                // 偶数像素：Y0 和 UV 分量
-                Y = yuyv[index];
-                U = yuyv[index + 1];
-                V = yuyv[index + 3];
-            } else {
-                // 奇数像素：Y1 和 UV 分量（共享）
-                Y = yuyv[index];
-                U = yuyv[index - 1];
-                V = yuyv[index + 1];
-            }
-
-            // 转换 YUV 到 RGB
-            // 基本转换公式 (ITU-R BT.601)
-            Y -= 16;
-            U -= 128;
-            V -= 128;
-            
-            R = (298 * Y + 409 * V + 128) >> 8;
-            G = (298 * Y - 100 * U - 208 * V + 128) >> 8;
-            B = (298 * Y + 516 * U + 128) >> 8;
-
-            // 限制值在 0-255 范围内
-            if (R > 255) R = 255;
-            if (G > 255) G = 255;
-            if (B > 255) B = 255;
-            if (R < 0) R = 0;
-            if (G < 0) G = 0;
-            if (B < 0) B = 0;
-
-            // 存储 RGB 值
-            line_buffer[z * 3] = (unsigned char)R;
-            line_buffer[z * 3 + 1] = (unsigned char)G;
-            line_buffer[z * 3 + 2] = (unsigned char)B;
-        }
-        
-        // 写入一行
-        row_pointer[0] = line_buffer;
-        jpeg_write_scanlines(&cinfo, row_pointer, 1);
+    // 验证实际设置的格式
+    if (dev->fmt.fmt.pix.pixelformat != format) {
+        fprintf(stderr, "Driver set format %c%c%c%c instead of requested %c%c%c%c\n",
+                (char)(dev->fmt.fmt.pix.pixelformat & 0xFF),
+                (char)((dev->fmt.fmt.pix.pixelformat >> 8) & 0xFF),
+                (char)((dev->fmt.fmt.pix.pixelformat >> 16) & 0xFF),
+                (char)((dev->fmt.fmt.pix.pixelformat >> 24) & 0xFF),
+                (char)(format & 0xFF),
+                (char)((format >> 8) & 0xFF),
+                (char)((format >> 16) & 0xFF),
+                (char)((format >> 24) & 0xFF));
+        return -1;
     }
 
-    // 完成压缩
-    jpeg_finish_compress(&cinfo);
-    jpeg_destroy_compress(&cinfo);
+    // 设置帧率
+    struct v4l2_streamparm parm;
+    CLEAR(parm);
+    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    parm.parm.capture.timeperframe.numerator = 1;
+    parm.parm.capture.timeperframe.denominator = fps;
     
-    // 释放行缓冲区
-    free(line_buffer);
+    if (ioctl(dev->fd, VIDIOC_S_PARM, &parm) < 0) {
+        perror("Setting FPS failed");
+        // 不是致命错误，继续
+    }
+
+    // 请求缓冲区
+    struct v4l2_requestbuffers req;
+    CLEAR(req);
+    req.count = 4;  // 增加缓冲区数量以获得更好的性能
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    req.memory = V4L2_MEMORY_MMAP;
+
+    if (ioctl(dev->fd, VIDIOC_REQBUFS, &req) < 0) {
+        perror("Requesting buffers failed");
+        return -1;
+    }
+
+    // 内存映射
+    dev->n_buffers = req.count;
+    for (uint32_t i = 0; i < dev->n_buffers; ++i) {
+        CLEAR(dev->buf);
+        dev->buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        dev->buf.memory = V4L2_MEMORY_MMAP;
+        dev->buf.index = i;
+
+        if (ioctl(dev->fd, VIDIOC_QUERYBUF, &dev->buf) < 0) {
+            perror("Querying buffer failed");
+            return -1;
+        }
+
+        dev->buffers[i] = mmap(
+            NULL, dev->buf.length,
+            PROT_READ | PROT_WRITE, MAP_SHARED,
+            dev->fd, dev->buf.m.offset
+        );
+
+        if (dev->buffers[i] == MAP_FAILED) {
+            perror("mmap failed");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int v4l2_start_capture(v4l2_dev_t* dev) {
+    for (uint32_t i = 0; i < dev->n_buffers; ++i) {
+        CLEAR(dev->buf);
+        dev->buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        dev->buf.memory = V4L2_MEMORY_MMAP;
+        dev->buf.index = i;
+        if (ioctl(dev->fd, VIDIOC_QBUF, &dev->buf) < 0) {
+            perror("Queueing buffer failed");
+            return -1;
+        }
+    }
     
-    return jpeg_size;
+    enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    if (ioctl(dev->fd, VIDIOC_STREAMON, &type) < 0) {
+        perror("Start capture failed");
+        return -1;
+    }
+    return 0;
+}
+
+int v4l2_capture_frame(v4l2_dev_t* dev) {
+    fd_set fds;
+    struct timeval tv;
+    int r;
+    
+    FD_ZERO(&fds);
+    FD_SET(dev->fd, &fds);
+    
+    // 设置超时时间 (2秒)
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+    
+    r = select(dev->fd + 1, &fds, NULL, NULL, &tv);
+    
+    if (r == -1) {
+        perror("select");
+        return -1;
+    }
+    
+    if (r == 0) {
+        fprintf(stderr, "Capture timeout\n");
+        return -1;
+    }
+    
+    CLEAR(dev->buf);
+    dev->buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    dev->buf.memory = V4L2_MEMORY_MMAP;
+    
+    if (ioctl(dev->fd, VIDIOC_DQBUF, &dev->buf) < 0) {
+        perror("Dequeue buffer failed");
+        return -1;
+    }
+    
+    return dev->buf.index;
+}
+
+void v4l2_close(v4l2_dev_t* dev) {
+    if (dev->fd != -1) {
+        // 取消映射缓冲区
+        for (uint32_t i = 0; i < dev->n_buffers; ++i) {
+            if (dev->buffers[i]) {
+                munmap(dev->buffers[i], dev->buf.length);
+                dev->buffers[i] = NULL;
+            }
+        }
+        
+        close(dev->fd);
+        dev->fd = -1;
+    }
 }
