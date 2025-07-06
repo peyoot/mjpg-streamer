@@ -6,8 +6,8 @@
 #include <sys/mman.h>
 #include <string.h>
 #include <stdio.h>
-#include <sys/select.h>  // 添加 select 头文件
-#include <stdint.h>      // 确保 uint32_t 定义可用
+#include <sys/select.h>
+#include <stdint.h>
 
 int v4l2_open(const char* device) {
     int fd = open(device, O_RDWR | O_NONBLOCK);
@@ -32,17 +32,17 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
         return -1;
     }
     
-    // 验证实际设置的格式
+    // 验证格式
     if (dev->fmt.fmt.pix.pixelformat != format) {
-        fprintf(stderr, "Driver set format %c%c%c%c instead of requested %c%c%c%c\n",
-                (char)(dev->fmt.fmt.pix.pixelformat & 0xFF),
-                (char)((dev->fmt.fmt.pix.pixelformat >> 8) & 0xFF),
-                (char)((dev->fmt.fmt.pix.pixelformat >> 16) & 0xFF),
-                (char)((dev->fmt.fmt.pix.pixelformat >> 24) & 0xFF),
-                (char)(format & 0xFF),
-                (char)((format >> 8) & 0xFF),
-                (char)((format >> 16) & 0xFF),
-                (char)((format >> 24) & 0xFF));
+        fprintf(stderr, "Driver set format %c%c%c%c instead of %c%c%c%c\n",
+                (dev->fmt.fmt.pix.pixelformat) & 0xFF,
+                (dev->fmt.fmt.pix.pixelformat >> 8) & 0xFF,
+                (dev->fmt.fmt.pix.pixelformat >> 16) & 0xFF,
+                (dev->fmt.fmt.pix.pixelformat >> 24) & 0xFF,
+                format & 0xFF,
+                (format >> 8) & 0xFF,
+                (format >> 16) & 0xFF,
+                (format >> 24) & 0xFF);
         return -1;
     }
 
@@ -55,13 +55,12 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
     
     if (ioctl(dev->fd, VIDIOC_S_PARM, &parm) < 0) {
         perror("Setting FPS failed");
-        // 不是致命错误，继续
     }
 
     // 请求缓冲区
     struct v4l2_requestbuffers req;
     CLEAR(req);
-    req.count = 4;  // 增加缓冲区数量以获得更好的性能
+    req.count = MAX_BUFFERS;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     req.memory = V4L2_MEMORY_MMAP;
 
@@ -83,6 +82,8 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
             return -1;
         }
 
+        dev->buffer_lengths[i] = dev->buf.length; // 保存长度
+        
         dev->buffers[i] = mmap(
             NULL, dev->buf.length,
             PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -111,7 +112,7 @@ int v4l2_start_capture(v4l2_dev_t* dev) {
     
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(dev->fd, VIDIOC_STREAMON, &type) < 0) {
-        perror("Start capture failed");
+        perror("VIDIOC_STREAMON failed");
         return -1;
     }
     return 0;
@@ -125,14 +126,13 @@ int v4l2_capture_frame(v4l2_dev_t* dev) {
     FD_ZERO(&fds);
     FD_SET(dev->fd, &fds);
     
-    // 设置超时时间 (2秒)
     tv.tv_sec = 2;
     tv.tv_usec = 0;
     
     r = select(dev->fd + 1, &fds, NULL, NULL, &tv);
     
     if (r == -1) {
-        perror("select");
+        perror("select error");
         return -1;
     }
     
@@ -155,10 +155,10 @@ int v4l2_capture_frame(v4l2_dev_t* dev) {
 
 void v4l2_close(v4l2_dev_t* dev) {
     if (dev->fd != -1) {
-        // 取消映射缓冲区
+        // 取消映射缓冲区（使用保存的长度）
         for (uint32_t i = 0; i < dev->n_buffers; ++i) {
             if (dev->buffers[i]) {
-                munmap(dev->buffers[i], dev->buf.length);
+                munmap(dev->buffers[i], dev->buffer_lengths[i]);
                 dev->buffers[i] = NULL;
             }
         }
