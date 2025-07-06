@@ -35,8 +35,16 @@ typedef struct {
     int instance_id;  // 存储实例ID
 } context;
 
+// 静态数组存储所有插件实例的上下文
+static context *plugin_contexts[MAX_INPUT_PLUGINS] = {NULL};
+
 /* 插件初始化 */
 int input_init(input_parameter *param, int id) {
+    if (id < 0 || id >= MAX_INPUT_PLUGINS) {
+        fprintf(stderr, "Invalid plugin ID: %d\n", id);
+        return -1;
+    }
+    
     context *ctx = calloc(1, sizeof(context));
     if (!ctx) {
         fprintf(stderr, "Memory allocation failed\n");
@@ -47,8 +55,8 @@ int input_init(input_parameter *param, int id) {
     ctx->global = param->global;
     ctx->instance_id = id;
     
-    // 将上下文存储到全局结构中
-    param->global->in[id].context = ctx;
+    // 存储上下文指针
+    plugin_contexts[id] = ctx;
     
     int argc = 0;
     char *argv[MAX_ARGUMENTS];
@@ -113,6 +121,7 @@ int input_init(input_parameter *param, int id) {
         fprintf(stderr, "Error opening V4L2 device %s\n", ctx->device);
         free(ctx->device);
         free(ctx);
+        plugin_contexts[id] = NULL;
         return -1;
     }
 
@@ -126,6 +135,7 @@ int input_init(input_parameter *param, int id) {
             close(ctx->v4l2.fd);
             free(ctx->device);
             free(ctx);
+            plugin_contexts[id] = NULL;
             return -1;
         }
         ctx->need_conversion = 1;
@@ -141,6 +151,7 @@ int input_init(input_parameter *param, int id) {
             v4l2_close(&ctx->v4l2);
             free(ctx->device);
             free(ctx);
+            plugin_contexts[id] = NULL;
             return -1;
         }
     }
@@ -152,6 +163,7 @@ int input_init(input_parameter *param, int id) {
         v4l2_close(&ctx->v4l2);
         free(ctx->device);
         free(ctx);
+        plugin_contexts[id] = NULL;
         return -1;
     }
 
@@ -160,8 +172,12 @@ int input_init(input_parameter *param, int id) {
 
 /* 获取一帧图像 */
 int input_run(int id) {
-    // 直接从全局结构中获取上下文
-    context *ctx = (context *)global.in[id].context;
+    if (id < 0 || id >= MAX_INPUT_PLUGINS) {
+        fprintf(stderr, "Invalid plugin ID: %d\n", id);
+        return -1;
+    }
+    
+    context *ctx = plugin_contexts[id];
     if (!ctx) {
         fprintf(stderr, "Context is NULL for instance %d\n", id);
         return -1;
@@ -211,8 +227,12 @@ int input_run(int id) {
 
 /* 停止捕获 */
 int input_stop(int id) {
-    // 直接从全局结构中获取上下文
-    context *ctx = (context *)global.in[id].context;
+    if (id < 0 || id >= MAX_INPUT_PLUGINS) {
+        fprintf(stderr, "Invalid plugin ID: %d\n", id);
+        return -1;
+    }
+    
+    context *ctx = plugin_contexts[id];
     if (!ctx) return 0;
 
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
@@ -226,8 +246,8 @@ int input_stop(int id) {
     if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
     free(ctx);
     
-    // 清空全局指针
-    global.in[id].context = NULL;
+    // 清空指针
+    plugin_contexts[id] = NULL;
     
     return 0;
 }
@@ -235,25 +255,28 @@ int input_stop(int id) {
 /* 插件控制接口 */
 int input_cmd(int command, unsigned int parameter, unsigned int parameter2, int parameter3, char* parameter_string) {
     // 默认使用第一个输入插件的上下文
-    context *ctx = (context *)global.in[0].context;
-    
-    if (!ctx || !ctx->frame) {
-        return -1;
-    }
-    
-    switch (command) {
-        case INPUT_GET_IMAGE:
-            if (parameter_string) {
-                *((unsigned char**)parameter_string) = ctx->frame;
-            }
-            if (parameter) {
-                *((int*)(uintptr_t)parameter) = ctx->frame_size;
-            }
-            break;
-        default:
+    if (MAX_INPUT_PLUGINS > 0) {
+        context *ctx = plugin_contexts[0];
+        
+        if (!ctx || !ctx->frame) {
             return -1;
+        }
+        
+        switch (command) {
+            case INPUT_GET_IMAGE:
+                if (parameter_string) {
+                    *((unsigned char**)parameter_string) = ctx->frame;
+                }
+                if (parameter) {
+                    *((int*)(uintptr_t)parameter) = ctx->frame_size;
+                }
+                break;
+            default:
+                return -1;
+        }
+        return 0;
     }
-    return 0;
+    return -1;
 }
 
 /* 插件描述 */
