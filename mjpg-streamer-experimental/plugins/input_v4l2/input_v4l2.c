@@ -18,9 +18,16 @@
 
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
-#define JPEG_BUFFER_SIZE (2 * 1024 * 1024)
+#define JPEG_BUFFER_SIZE (2 * 1024 * 1024) // 2MB JPEG buffer
 #define MAX_BUFFERS 4
-#define MAX_INPUT_PLUGINS 10  // 添加最大插件实例数
+#define MAX_INPUT_PLUGINS 10
+
+// 转换类型枚举
+enum {
+    CONV_NONE = 0,    // 不需要转换
+    CONV_YUYV_TO_JPEG,
+    CONV_RGBP_TO_JPEG
+};
 
 typedef struct {
     v4l2_dev_t v4l2;
@@ -30,8 +37,8 @@ typedef struct {
     char* device;
     unsigned char* frame;
     size_t frame_size;
-    int need_conversion;
-    unsigned char* jpeg_buffer;
+    int conversion_type;  // 转换类型
+    unsigned char* jpeg_buffer; // JPEG转换缓冲区
 } context;
 
 // 静态数组存储所有插件实例的上下文
@@ -53,7 +60,7 @@ int input_init(input_parameter *param, int id) {
     // 存储上下文指针
     plugin_contexts[id] = ctx;
     
-    // 直接使用param->argv获取参数
+    // 使用param传递的参数
     int argc = param->argc;
     char **argv = param->argv;
     
@@ -92,6 +99,8 @@ int input_init(input_parameter *param, int id) {
                 printf("  -d, --device <device>   V4L2 device (default: /dev/video0)\n");
                 printf("  -r, --resolution <res>  Resolution (e.g., VGA, HD, 640x480)\n");
                 printf("  -f, --fps <fps>         Frames per second\n");
+                free(ctx);
+                plugin_contexts[id] = NULL;
                 return 0; // 不是错误，但需要停止初始化
             default:
                 fprintf(stderr, "Unknown option\n");
@@ -135,29 +144,64 @@ int input_init(input_parameter *param, int id) {
         perror("VIDIOC_QUERYCAP failed");
     }
 
-    // 尝试MJPEG格式
-    int format = V4L2_PIX_FMT_MJPEG;
-    printf("Trying MJPEG format...\n");
-    if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, format) < 0) {
-        printf("MJPEG not supported, trying YUYV\n");
-        format = V4L2_PIX_FMT_YUYV;
-        if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, format) < 0) {
-            fprintf(stderr, "V4L2 init failed\n");
-            close(ctx->v4l2.fd);
-            free(ctx->device);
-            free(ctx);
-            plugin_contexts[id] = NULL;
-            return -1;
+    // 尝试支持的格式
+    int supported_formats[] = {
+        V4L2_PIX_FMT_JPEG,   // 优先尝试 JPEG
+        V4L2_PIX_FMT_MJPEG,  // 然后尝试 MJPEG
+        V4L2_PIX_FMT_RGBP,   // 再尝试 RGBP
+        V4L2_PIX_FMT_YUYV    // 最后尝试 YUYV
+    };
+    
+    const char *format_names[] = {
+        "JPEG", "MJPEG", "RGBP", "YUYV"
+    };
+    
+    int format_count = sizeof(supported_formats) / sizeof(supported_formats[0]);
+    int format_success = 0;
+    
+    for (int i = 0; i < format_count; i++) {
+        printf("Trying format: %s...\n", format_names[i]);
+        if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, supported_formats[i]) == 0) {
+            // 获取实际设置的格式
+            struct v4l2_format actual_fmt;
+            CLEAR(actual_fmt);
+            actual_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+            
+            if (ioctl(ctx->v4l2.fd, VIDIOC_G_FMT, &actual_fmt) == 0) {
+                printf("Actual format set: %c%c%c%c\n",
+                    (actual_fmt.fmt.pix.pixelformat >> 0) & 0xFF,
+                    (actual_fmt.fmt.pix.pixelformat >> 8) & 0xFF,
+                    (actual_fmt.fmt.pix.pixelformat >> 16) & 0xFF,
+                    (actual_fmt.fmt.pix.pixelformat >> 24) & 0xFF);
+            }
+            
+            // 根据格式设置转换类型
+            if (supported_formats[i] == V4L2_PIX_FMT_JPEG || 
+                supported_formats[i] == V4L2_PIX_FMT_MJPEG) {
+                ctx->conversion_type = CONV_NONE;
+            } else if (supported_formats[i] == V4L2_PIX_FMT_YUYV) {
+                ctx->conversion_type = CONV_YUYV_TO_JPEG;
+            } else if (supported_formats[i] == V4L2_PIX_FMT_RGBP) {
+                ctx->conversion_type = CONV_RGBP_TO_JPEG;
+            }
+            
+            format_success = 1;
+            printf("Format %s initialized successfully\n", format_names[i]);
+            break;
         }
-        ctx->need_conversion = 1;
-    } else {
-        ctx->need_conversion = 0;
     }
     
-    printf("Format initialized: %s\n", ctx->need_conversion ? "YUYV" : "MJPEG");
+    if (!format_success) {
+        fprintf(stderr, "Failed to initialize any supported format\n");
+        close(ctx->v4l2.fd);
+        free(ctx->device);
+        free(ctx);
+        plugin_contexts[id] = NULL;
+        return -1;
+    }
 
-    // 分配JPEG缓冲区
-    if (ctx->need_conversion) {
+    // 分配JPEG缓冲区（如果需要转换）
+    if (ctx->conversion_type != CONV_NONE) {
         ctx->jpeg_buffer = malloc(JPEG_BUFFER_SIZE);
         if (!ctx->jpeg_buffer) {
             fprintf(stderr, "Failed to allocate JPEG buffer\n");
@@ -166,6 +210,30 @@ int input_init(input_parameter *param, int id) {
             free(ctx);
             plugin_contexts[id] = NULL;
             return -1;
+        }
+    }
+
+    // STM32 dcmipp 驱动特殊处理
+    if (strcmp(caps.driver, "dcmipp") == 0) {
+        printf("STM32 dcmipp driver detected, applying workaround\n");
+        
+        // 此驱动不支持帧率控制
+        ctx->fps = 0;
+        
+        // 设置字节对齐（如果需要）
+        struct v4l2_ext_controls ctrls;
+        struct v4l2_ext_control ctrl;
+        CLEAR(ctrls);
+        CLEAR(ctrl);
+        
+        ctrl.id = V4L2_CID_JPEG_CHROMA_SUBSAMPLING;
+        ctrl.value = V4L2_JPEG_CHROMA_SUBSAMPLING_420;
+        
+        ctrls.controls = &ctrl;
+        ctrls.count = 1;
+        
+        if (ioctl(ctx->v4l2.fd, VIDIOC_S_EXT_CTRLS, &ctrls) < 0) {
+            perror("WARNING: Failed to set chroma subsampling");
         }
     }
 
@@ -198,8 +266,7 @@ int input_run(int id) {
         return -1;
     }
 
-    // 添加调试输出
-    printf("Capturing frame...\n");
+    // 捕获帧
     int index = v4l2_capture_frame(&ctx->v4l2);
     if (index < 0 || index >= MAX_BUFFERS) {
         fprintf(stderr, "Invalid buffer index: %d\n", index);
@@ -209,30 +276,50 @@ int input_run(int id) {
     // 获取原始帧数据
     unsigned char* raw_frame = ctx->v4l2.buffers[index];
     size_t raw_size = ctx->v4l2.buf.bytesused;
-    printf("Frame captured: size=%zu\n", raw_size);
     
     // 根据格式处理
-    if (ctx->need_conversion) {
-        printf("Converting YUYV to JPEG...\n");
-        int jpeg_size = compress_yuyv_to_jpeg(
-            ctx->jpeg_buffer, JPEG_BUFFER_SIZE,
-            raw_frame, 
-            ctx->width, ctx->height,
-            85
-        );
-        
-        if (jpeg_size > 0 && jpeg_size <= JPEG_BUFFER_SIZE) {
-            ctx->frame = ctx->jpeg_buffer;
-            ctx->frame_size = jpeg_size;
-            printf("JPEG conversion successful: size=%d\n", jpeg_size);
-        } else {
-            fprintf(stderr, "YUV to JPEG conversion failed or buffer overflow: %d\n", jpeg_size);
+    switch (ctx->conversion_type) {
+        case CONV_NONE:
+            // 直接使用JPEG/MJPEG
+            ctx->frame = raw_frame;
+            ctx->frame_size = raw_size;
+            break;
+            
+        case CONV_YUYV_TO_JPEG:
+            // YUYV转JPEG
+            ctx->frame_size = compress_yuyv_to_jpeg(
+                ctx->jpeg_buffer, JPEG_BUFFER_SIZE,
+                raw_frame, 
+                ctx->width, ctx->height,
+                85
+            );
+            if (ctx->frame_size > 0 && ctx->frame_size <= JPEG_BUFFER_SIZE) {
+                ctx->frame = ctx->jpeg_buffer;
+            } else {
+                fprintf(stderr, "YUYV to JPEG conversion failed\n");
+                return -1;
+            }
+            break;
+            
+        case CONV_RGBP_TO_JPEG:
+            // RGBP转JPEG
+            ctx->frame_size = compress_rgbp_to_jpeg(
+                ctx->jpeg_buffer, JPEG_BUFFER_SIZE,
+                raw_frame, 
+                ctx->width, ctx->height,
+                85
+            );
+            if (ctx->frame_size > 0 && ctx->frame_size <= JPEG_BUFFER_SIZE) {
+                ctx->frame = ctx->jpeg_buffer;
+            } else {
+                fprintf(stderr, "RGBP to JPEG conversion failed\n");
+                return -1;
+            }
+            break;
+            
+        default:
+            fprintf(stderr, "Unknown conversion type: %d\n", ctx->conversion_type);
             return -1;
-        }
-    } else {
-        printf("Using MJPEG directly\n");
-        ctx->frame = raw_frame;
-        ctx->frame_size = raw_size;
     }
     
     // 重新入队缓冲区

@@ -1,4 +1,3 @@
-// jpeg_utils.h
 #ifndef JPEG_UTILS_H
 #define JPEG_UTILS_H
 
@@ -7,6 +6,9 @@
 #include <jpeglib.h>
 
 int compress_yuyv_to_jpeg(unsigned char *dst, size_t dst_size, 
+                         unsigned char *src, int width, int height, int quality);
+
+int compress_rgbp_to_jpeg(unsigned char *dst, size_t dst_size, 
                          unsigned char *src, int width, int height, int quality);
 
 #endif

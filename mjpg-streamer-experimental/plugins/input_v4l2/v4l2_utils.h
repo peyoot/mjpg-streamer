@@ -4,12 +4,22 @@
 #include <string.h>
 #include <stdint.h>
 
+// 确保必要的像素格式已定义
 #ifndef V4L2_PIX_FMT_YUYV
 #define V4L2_PIX_FMT_YUYV v4l2_fourcc('Y', 'U', 'Y', 'V')
 #endif
 
 #ifndef V4L2_PIX_FMT_MJPEG
 #define V4L2_PIX_FMT_MJPEG v4l2_fourcc('M', 'J', 'P', 'G')
+#endif
+
+#ifndef V4L2_PIX_FMT_JPEG
+#define V4L2_PIX_FMT_JPEG v4l2_fourcc('J', 'P', 'E', 'G')
+#endif
+
+// 添加 RGBP 格式定义 (RGB565)
+#ifndef V4L2_PIX_FMT_RGBP
+#define V4L2_PIX_FMT_RGBP v4l2_fourcc('R', 'G', 'B', 'P')
 #endif
 
 #define CLEAR(x) memset(&(x), 0, sizeof(x))

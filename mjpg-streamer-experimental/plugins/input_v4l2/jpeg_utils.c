@@ -19,7 +19,7 @@ int compress_yuyv_to_jpeg(unsigned char *dst, size_t dst_size,
     JSAMPROW row_pointer[1];
     int row_stride;
     int y, x;
-    unsigned char *yuyv, *y_row, *u_row, *v_row;
+    unsigned char *yuyv;
 
     cinfo.err = jpeg_std_error(&jerr.pub);
     jerr.pub.error_exit = error_exit;
@@ -70,6 +70,73 @@ int compress_yuyv_to_jpeg(unsigned char *dst, size_t dst_size,
             *row_ptr++ = y1;
             *row_ptr++ = u0;
             *row_ptr++ = v0;
+        }
+        row_pointer[0] = row;
+        jpeg_write_scanlines(&cinfo, row_pointer, 1);
+    }
+    
+    free(row);
+    jpeg_finish_compress(&cinfo);
+    jpeg_destroy_compress(&cinfo);
+    
+    return dst_size;
+}
+
+int compress_rgbp_to_jpeg(unsigned char *dst, size_t dst_size, 
+                         unsigned char *src, int width, int height, int quality) {
+    struct jpeg_compress_struct cinfo;
+    struct error_mgr jerr;
+    JSAMPROW row_pointer[1];
+    int row_stride;
+    int y, x;
+    unsigned char *rgbp;
+
+    cinfo.err = jpeg_std_error(&jerr.pub);
+    jerr.pub.error_exit = error_exit;
+    
+    if (setjmp(jerr.setjmp_buffer)) {
+        jpeg_destroy_compress(&cinfo);
+        return -1;
+    }
+
+    jpeg_create_compress(&cinfo);
+    cinfo.image_width = width;
+    cinfo.image_height = height;
+    cinfo.input_components = 3;
+    cinfo.in_color_space = JCS_RGB;
+    
+    jpeg_set_defaults(&cinfo);
+    jpeg_set_quality(&cinfo, quality, TRUE);
+    jpeg_mem_dest(&cinfo, &dst, &dst_size);
+    
+    jpeg_start_compress(&cinfo, TRUE);
+    
+    row_stride = width * 2; // RGBP是2字节/像素
+    rgbp = src;
+    
+    // 分配临时行缓冲区
+    unsigned char *row = malloc(width * 3);
+    if (!row) {
+        jpeg_destroy_compress(&cinfo);
+        return -1;
+    }
+    
+    while (cinfo.next_scanline < cinfo.image_height) {
+        unsigned char *row_ptr = row;
+        for (x = 0; x < width; x++) {
+            // 提取RGB565值
+            unsigned short pixel = (rgbp[1] << 8) | rgbp[0];
+            rgbp += 2;
+            
+            // 转换为RGB888
+            unsigned char r = (pixel >> 11) & 0x1F; // 5 bits
+            unsigned char g = (pixel >> 5) & 0x3F;   // 6 bits
+            unsigned char b = pixel & 0x1F;          // 5 bits
+            
+            // 扩展到8位 (简单方法：左移 + 复制高位)
+            *row_ptr++ = (r << 3) | (r >> 2);
+            *row_ptr++ = (g << 2) | (g >> 4);
+            *row_ptr++ = (b << 3) | (b >> 2);
         }
         row_pointer[0] = row;
         jpeg_write_scanlines(&cinfo, row_pointer, 1);
