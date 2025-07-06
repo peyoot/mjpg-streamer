@@ -18,8 +18,9 @@
 
 #define INPUT_PLUGIN_NAME "V4L2 input plugin"
 #define MAX_ARGUMENTS 32
-#define JPEG_BUFFER_SIZE (2 * 1024 * 1024) // 2MB JPEG buffer
+#define JPEG_BUFFER_SIZE (2 * 1024 * 1024)
 #define MAX_BUFFERS 4
+#define MAX_INPUT_PLUGINS 10  // 添加最大插件实例数
 
 typedef struct {
     v4l2_dev_t v4l2;
@@ -31,8 +32,6 @@ typedef struct {
     size_t frame_size;
     int need_conversion;
     unsigned char* jpeg_buffer;
-    globals *global;  // 存储全局指针
-    int instance_id;  // 存储实例ID
 } context;
 
 // 静态数组存储所有插件实例的上下文
@@ -51,41 +50,33 @@ int input_init(input_parameter *param, int id) {
         return -1;
     }
     
-    // 保存全局指针和实例ID
-    ctx->global = param->global;
-    ctx->instance_id = id;
-    
     // 存储上下文指针
     plugin_contexts[id] = ctx;
     
-    int argc = 0;
-    char *argv[MAX_ARGUMENTS];
-    char *token, *saveptr;
+    // 直接使用param->argv获取参数
+    int argc = param->argc;
+    char **argv = param->argv;
     
-    char *input = strdup(param->argv[0]);
-    if (!input) {
-        fprintf(stderr, "Memory allocation failed\n");
-        free(ctx);
-        return -1;
-    }
-    
-    token = strtok_r(input, " ", &saveptr);
-    while (token != NULL && argc < MAX_ARGUMENTS) {
-        argv[argc++] = token;
-        token = strtok_r(NULL, " ", &saveptr);
+    // 调试输出参数
+    printf("input_init called with %d arguments:\n", argc);
+    for (int i = 0; i < argc; i++) {
+        printf("  argv[%d] = %s\n", i, argv[i] ? argv[i] : "(null)");
     }
     
     static struct option long_options[] = {
         {"device", required_argument, 0, 'd'},
         {"resolution", required_argument, 0, 'r'},
         {"fps", required_argument, 0, 'f'},
+        {"help", no_argument, 0, 'h'},
         {0, 0, 0, 0}
     };
     
-    reset_getopt();
+    // 重置getopt
+    optind = 0;
     
+    // 解析选项
     int c;
-    while ((c = getopt_long(argc, argv, "d:r:f:", long_options, NULL)) != -1) {
+    while ((c = getopt_long(argc, argv, "d:r:f:h", long_options, NULL)) != -1) {
         switch (c) {
             case 'd':
                 ctx->device = strdup(optarg);
@@ -96,24 +87,29 @@ int input_init(input_parameter *param, int id) {
             case 'f':
                 ctx->fps = atoi(optarg);
                 break;
+            case 'h':
+                printf("V4L2 input plugin options:\n");
+                printf("  -d, --device <device>   V4L2 device (default: /dev/video0)\n");
+                printf("  -r, --resolution <res>  Resolution (e.g., VGA, HD, 640x480)\n");
+                printf("  -f, --fps <fps>         Frames per second\n");
+                return 0; // 不是错误，但需要停止初始化
             default:
-                fprintf(stderr, "Unknown option: %c\n", c);
-                free(input);
+                fprintf(stderr, "Unknown option\n");
                 free(ctx);
+                plugin_contexts[id] = NULL;
                 return -1;
         }
     }
-    
-    free(input);
 
     // 设置默认值
     if (!ctx->device) ctx->device = strdup("/dev/video0");
     if (!ctx->width) ctx->width = 640;
     if (!ctx->height) ctx->height = 480;
-    if (!ctx->fps) ctx->fps = 30;
+    if (!ctx->fps) ctx->fps = 15;  // 降低默认帧率
 
-    printf("Opening device: %s, Resolution: %dx%d, FPS: %d\n", 
-           ctx->device, ctx->width, ctx->height, ctx->fps);
+    printf("Opening device: %s\n", ctx->device);
+    printf("Resolution: %dx%d\n", ctx->width, ctx->height);
+    printf("FPS: %d\n", ctx->fps);
 
     // 打开设备
     ctx->v4l2.fd = v4l2_open(ctx->device);
@@ -124,11 +120,26 @@ int input_init(input_parameter *param, int id) {
         plugin_contexts[id] = NULL;
         return -1;
     }
+    
+    printf("Device opened: fd=%d\n", ctx->v4l2.fd);
+    
+    // 检查设备能力
+    struct v4l2_capability caps;
+    CLEAR(caps);
+    if (ioctl(ctx->v4l2.fd, VIDIOC_QUERYCAP, &caps) == 0) {
+        printf("Driver: %s\n", caps.driver);
+        printf("Card: %s\n", caps.card);
+        printf("Bus: %s\n", caps.bus_info);
+        printf("Capabilities: %08x\n", caps.capabilities);
+    } else {
+        perror("VIDIOC_QUERYCAP failed");
+    }
 
     // 尝试MJPEG格式
     int format = V4L2_PIX_FMT_MJPEG;
+    printf("Trying MJPEG format...\n");
     if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, format) < 0) {
-        fprintf(stderr, "MJPEG format not supported, trying YUYV\n");
+        printf("MJPEG not supported, trying YUYV\n");
         format = V4L2_PIX_FMT_YUYV;
         if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, format) < 0) {
             fprintf(stderr, "V4L2 init failed\n");
@@ -143,6 +154,8 @@ int input_init(input_parameter *param, int id) {
         ctx->need_conversion = 0;
     }
     
+    printf("Format initialized: %s\n", ctx->need_conversion ? "YUYV" : "MJPEG");
+
     // 分配JPEG缓冲区
     if (ctx->need_conversion) {
         ctx->jpeg_buffer = malloc(JPEG_BUFFER_SIZE);
@@ -157,6 +170,7 @@ int input_init(input_parameter *param, int id) {
     }
 
     // 开始捕获
+    printf("Starting capture...\n");
     if (v4l2_start_capture(&ctx->v4l2) < 0) {
         fprintf(stderr, "Start capture failed\n");
         if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
@@ -167,6 +181,7 @@ int input_init(input_parameter *param, int id) {
         return -1;
     }
 
+    printf("V4L2 input plugin initialized successfully\n");
     return 0;
 }
 
@@ -183,6 +198,8 @@ int input_run(int id) {
         return -1;
     }
 
+    // 添加调试输出
+    printf("Capturing frame...\n");
     int index = v4l2_capture_frame(&ctx->v4l2);
     if (index < 0 || index >= MAX_BUFFERS) {
         fprintf(stderr, "Invalid buffer index: %d\n", index);
@@ -192,10 +209,11 @@ int input_run(int id) {
     // 获取原始帧数据
     unsigned char* raw_frame = ctx->v4l2.buffers[index];
     size_t raw_size = ctx->v4l2.buf.bytesused;
+    printf("Frame captured: size=%zu\n", raw_size);
     
     // 根据格式处理
     if (ctx->need_conversion) {
-        // YUYV转JPEG
+        printf("Converting YUYV to JPEG...\n");
         int jpeg_size = compress_yuyv_to_jpeg(
             ctx->jpeg_buffer, JPEG_BUFFER_SIZE,
             raw_frame, 
@@ -206,12 +224,13 @@ int input_run(int id) {
         if (jpeg_size > 0 && jpeg_size <= JPEG_BUFFER_SIZE) {
             ctx->frame = ctx->jpeg_buffer;
             ctx->frame_size = jpeg_size;
+            printf("JPEG conversion successful: size=%d\n", jpeg_size);
         } else {
             fprintf(stderr, "YUV to JPEG conversion failed or buffer overflow: %d\n", jpeg_size);
             return -1;
         }
     } else {
-        // 直接使用MJPEG
+        printf("Using MJPEG directly\n");
         ctx->frame = raw_frame;
         ctx->frame_size = raw_size;
     }
@@ -233,8 +252,12 @@ int input_stop(int id) {
     }
     
     context *ctx = plugin_contexts[id];
-    if (!ctx) return 0;
+    if (!ctx) {
+        printf("No context for instance %d\n", id);
+        return 0;
+    }
 
+    printf("Stopping capture...\n");
     enum v4l2_buf_type type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     if (ioctl(ctx->v4l2.fd, VIDIOC_STREAMOFF, &type) < 0) {
         perror("Stop capture failed");
@@ -242,23 +265,30 @@ int input_stop(int id) {
     v4l2_close(&ctx->v4l2);
     
     // 释放资源
-    if (ctx->device) free(ctx->device);
-    if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
+    if (ctx->device) {
+        free(ctx->device);
+        ctx->device = NULL;
+    }
+    if (ctx->jpeg_buffer) {
+        free(ctx->jpeg_buffer);
+        ctx->jpeg_buffer = NULL;
+    }
     free(ctx);
     
     // 清空指针
     plugin_contexts[id] = NULL;
     
+    printf("V4L2 input plugin stopped\n");
     return 0;
 }
 
 /* 插件控制接口 */
 int input_cmd(int command, unsigned int parameter, unsigned int parameter2, int parameter3, char* parameter_string) {
     // 默认使用第一个输入插件的上下文
-    if (MAX_INPUT_PLUGINS > 0) {
+    if (plugin_contexts[0]) {
         context *ctx = plugin_contexts[0];
         
-        if (!ctx || !ctx->frame) {
+        if (!ctx->frame) {
             return -1;
         }
         
