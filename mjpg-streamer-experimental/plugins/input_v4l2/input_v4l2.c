@@ -172,6 +172,19 @@ int input_init(input_parameter *param, int id) {
     
     for (int i = 0; i < format_count; i++) {
         printf("Trying format: %s...\n", format_names[i]);
+        
+        // 为每种格式尝试重新打开设备
+        if (ctx->v4l2.fd >= 0) {
+            close(ctx->v4l2.fd);
+            ctx->v4l2.fd = -1;
+        }
+        
+        ctx->v4l2.fd = v4l2_open(ctx->device);
+        if (ctx->v4l2.fd < 0) {
+            fprintf(stderr, "Error reopening device for format %s\n", format_names[i]);
+            continue;
+        }
+        
         if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, supported_formats[i]) == 0) {
             // 获取实际设置的格式
             struct v4l2_format actual_fmt;
@@ -179,11 +192,30 @@ int input_init(input_parameter *param, int id) {
             actual_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
             
             if (ioctl(ctx->v4l2.fd, VIDIOC_G_FMT, &actual_fmt) == 0) {
+                uint32_t pix_fmt = actual_fmt.fmt.pix.pixelformat;
                 printf("Actual format set: %c%c%c%c\n",
-                    (actual_fmt.fmt.pix.pixelformat >> 0) & 0xFF,
-                    (actual_fmt.fmt.pix.pixelformat >> 8) & 0xFF,
-                    (actual_fmt.fmt.pix.pixelformat >> 16) & 0xFF,
-                    (actual_fmt.fmt.pix.pixelformat >> 24) & 0xFF);
+                    (pix_fmt >> 0) & 0xFF,
+                    (pix_fmt >> 8) & 0xFF,
+                    (pix_fmt >> 16) & 0xFF,
+                    (pix_fmt >> 24) & 0xFF);
+                
+                // 检查实际格式是否匹配
+                if (pix_fmt != supported_formats[i]) {
+                    fprintf(stderr, "Format mismatch: requested %s but got %c%c%c%c\n",
+                        format_names[i],
+                        (pix_fmt >> 0) & 0xFF,
+                        (pix_fmt >> 8) & 0xFF,
+                        (pix_fmt >> 16) & 0xFF,
+                        (pix_fmt >> 24) & 0xFF);
+                    close(ctx->v4l2.fd);
+                    ctx->v4l2.fd = -1;
+                    continue;
+                }
+            } else {
+                perror("Failed to get actual format");
+                close(ctx->v4l2.fd);
+                ctx->v4l2.fd = -1;
+                continue;
             }
             
             // 根据格式设置转换类型
@@ -199,12 +231,15 @@ int input_init(input_parameter *param, int id) {
             format_success = 1;
             printf("Format %s initialized successfully\n", format_names[i]);
             break;
+        } else {
+            close(ctx->v4l2.fd);
+            ctx->v4l2.fd = -1;
         }
     }
     
     if (!format_success) {
         fprintf(stderr, "Failed to initialize any supported format\n");
-        close(ctx->v4l2.fd);
+        if (ctx->v4l2.fd >= 0) close(ctx->v4l2.fd);
         free(ctx->device);
         free(ctx);
         plugin_contexts[id] = NULL;
@@ -224,12 +259,6 @@ int input_init(input_parameter *param, int id) {
         }
     }
 
-    // STM32 dcmipp 驱动特殊处理 - 缓冲区数量
-    if (is_stm32_dcmipp) {
-        // 对于STM32，我们可能需要调整缓冲区数量
-        // 这已经在v4l2_init中处理
-    }
-
     // 开始捕获
     printf("Starting capture...\n");
     if (v4l2_start_capture(&ctx->v4l2) < 0) {
@@ -241,7 +270,6 @@ int input_init(input_parameter *param, int id) {
             
             // 关闭并重新打开设备
             v4l2_close(&ctx->v4l2);
-            close(ctx->v4l2.fd);
             
             ctx->v4l2.fd = v4l2_open(ctx->device);
             if (ctx->v4l2.fd < 0) {

@@ -1,6 +1,6 @@
 #include "jpeg_utils.h"
 #include <setjmp.h>
-#include <time.h> // 添加性能测量
+#include <time.h>
 
 struct error_mgr {
     struct jpeg_error_mgr pub;

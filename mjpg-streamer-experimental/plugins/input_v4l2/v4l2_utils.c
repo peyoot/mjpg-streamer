@@ -9,7 +9,7 @@
 #include <stdio.h>
 #include <sys/select.h>
 #include <stdint.h>
-#include <sys/sysmacros.h> // 添加头文件
+#include <sys/sysmacros.h>
 
 int v4l2_open(const char* device) {
     int fd = open(device, O_RDWR | O_NONBLOCK);
@@ -71,8 +71,8 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
     req.memory = V4L2_MEMORY_MMAP;
     req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
     
-    // STM32 驱动通常需要2个缓冲区
-    req.count = 2;
+    // 增加缓冲区数量以解决STM32问题
+    req.count = 4;
     
     if (ioctl(dev->fd, VIDIOC_REQBUFS, &req) < 0) {
         perror("Requesting buffers failed");
@@ -81,6 +81,12 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
 
     // 内存映射
     dev->n_buffers = req.count;
+    if (dev->n_buffers > MAX_BUFFERS) {
+        fprintf(stderr, "Warning: driver requested %d buffers, but only %d supported\n",
+                dev->n_buffers, MAX_BUFFERS);
+        dev->n_buffers = MAX_BUFFERS;
+    }
+    
     for (uint32_t i = 0; i < dev->n_buffers; ++i) {
         CLEAR(dev->buf);
         dev->buf.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
