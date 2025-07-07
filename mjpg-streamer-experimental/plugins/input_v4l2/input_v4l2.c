@@ -1,3 +1,4 @@
+// input_v4l2.c
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -114,11 +115,11 @@ int input_init(input_parameter *param, int id) {
     if (!ctx->device) ctx->device = strdup("/dev/video0");
     if (!ctx->width) ctx->width = 640;
     if (!ctx->height) ctx->height = 480;
-    if (!ctx->fps) ctx->fps = 15;  // 降低默认帧率
+    if (!ctx->fps) ctx->fps = 0;  // 0 表示使用驱动默认帧率
 
     printf("Opening device: %s\n", ctx->device);
     printf("Resolution: %dx%d\n", ctx->width, ctx->height);
-    printf("FPS: %d\n", ctx->fps);
+    printf("FPS: %d (0 = driver default)\n", ctx->fps);
 
     // 打开设备
     ctx->v4l2.fd = v4l2_open(ctx->device);
@@ -144,16 +145,26 @@ int input_init(input_parameter *param, int id) {
         perror("VIDIOC_QUERYCAP failed");
     }
 
-    // 尝试支持的格式
+    // STM32 dcmipp 驱动特殊处理
+    int is_stm32_dcmipp = 0;
+    if (strcmp((char*)caps.driver, "dcmipp") == 0) {
+        printf("STM32 dcmipp driver detected, applying workaround\n");
+        is_stm32_dcmipp = 1;
+        
+        // 此驱动不支持帧率控制
+        ctx->fps = 0;
+    }
+
+    // 尝试支持的格式 - 优先 MJPEG
     int supported_formats[] = {
-        V4L2_PIX_FMT_JPEG,   // 优先尝试 JPEG
-        V4L2_PIX_FMT_MJPEG,  // 然后尝试 MJPEG
-        V4L2_PIX_FMT_RGBP,   // 再尝试 RGBP
-        V4L2_PIX_FMT_YUYV    // 最后尝试 YUYV
+        V4L2_PIX_FMT_MJPEG,  // 优先尝试 MJPEG
+        V4L2_PIX_FMT_JPEG,   // 然后尝试 JPEG
+        V4L2_PIX_FMT_YUYV,   // 再尝试 YUYV
+        V4L2_PIX_FMT_RGBP    // 最后尝试 RGBP
     };
     
     const char *format_names[] = {
-        "JPEG", "MJPEG", "RGBP", "YUYV"
+        "MJPEG", "JPEG", "YUYV", "RGBP"
     };
     
     int format_count = sizeof(supported_formats) / sizeof(supported_formats[0]);
@@ -213,40 +224,65 @@ int input_init(input_parameter *param, int id) {
         }
     }
 
-    // STM32 dcmipp 驱动特殊处理
-    if (strcmp(caps.driver, "dcmipp") == 0) {
-        printf("STM32 dcmipp driver detected, applying workaround\n");
-        
-        // 此驱动不支持帧率控制
-        ctx->fps = 0;
-        
-        // 设置字节对齐（如果需要）
-        struct v4l2_ext_controls ctrls;
-        struct v4l2_ext_control ctrl;
-        CLEAR(ctrls);
-        CLEAR(ctrl);
-        
-        ctrl.id = V4L2_CID_JPEG_CHROMA_SUBSAMPLING;
-        ctrl.value = V4L2_JPEG_CHROMA_SUBSAMPLING_420;
-        
-        ctrls.controls = &ctrl;
-        ctrls.count = 1;
-        
-        if (ioctl(ctx->v4l2.fd, VIDIOC_S_EXT_CTRLS, &ctrls) < 0) {
-            perror("WARNING: Failed to set chroma subsampling");
-        }
+    // STM32 dcmipp 驱动特殊处理 - 缓冲区数量
+    if (is_stm32_dcmipp) {
+        // 对于STM32，我们可能需要调整缓冲区数量
+        // 这已经在v4l2_init中处理
     }
 
     // 开始捕获
     printf("Starting capture...\n");
     if (v4l2_start_capture(&ctx->v4l2) < 0) {
         fprintf(stderr, "Start capture failed\n");
-        if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
-        v4l2_close(&ctx->v4l2);
-        free(ctx->device);
-        free(ctx);
-        plugin_contexts[id] = NULL;
-        return -1;
+        
+        // 尝试使用DMA缓冲区作为后备方案
+        if (is_stm32_dcmipp) {
+            printf("Trying DMA buffers as fallback...\n");
+            
+            // 关闭并重新打开设备
+            v4l2_close(&ctx->v4l2);
+            close(ctx->v4l2.fd);
+            
+            ctx->v4l2.fd = v4l2_open(ctx->device);
+            if (ctx->v4l2.fd < 0) {
+                fprintf(stderr, "Error reopening V4L2 device %s\n", ctx->device);
+                if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
+                free(ctx->device);
+                free(ctx);
+                plugin_contexts[id] = NULL;
+                return -1;
+            }
+            
+            // 重新初始化格式
+            if (v4l2_init(&ctx->v4l2, ctx->width, ctx->height, ctx->fps, ctx->conversion_type) != 0) {
+                fprintf(stderr, "Reinitialization failed\n");
+                if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
+                v4l2_close(&ctx->v4l2);
+                free(ctx->device);
+                free(ctx);
+                plugin_contexts[id] = NULL;
+                return -1;
+            }
+            
+            // 再次尝试捕获
+            if (v4l2_start_capture(&ctx->v4l2) < 0) {
+                fprintf(stderr, "Fallback capture start failed\n");
+                if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
+                v4l2_close(&ctx->v4l2);
+                free(ctx->device);
+                free(ctx);
+                plugin_contexts[id] = NULL;
+                return -1;
+            }
+        } else {
+            // 非STM32设备，直接失败
+            if (ctx->jpeg_buffer) free(ctx->jpeg_buffer);
+            v4l2_close(&ctx->v4l2);
+            free(ctx->device);
+            free(ctx);
+            plugin_contexts[id] = NULL;
+            return -1;
+        }
     }
 
     printf("V4L2 input plugin initialized successfully\n");

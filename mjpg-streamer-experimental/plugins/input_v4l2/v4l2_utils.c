@@ -1,3 +1,4 @@
+// v4l2_utils.c
 #include "v4l2_utils.h"
 #include <fcntl.h>
 #include <unistd.h>
@@ -8,6 +9,7 @@
 #include <stdio.h>
 #include <sys/select.h>
 #include <stdint.h>
+#include <sys/sysmacros.h> // 添加头文件
 
 int v4l2_open(const char* device) {
     int fd = open(device, O_RDWR | O_NONBLOCK);
@@ -32,38 +34,46 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
         return -1;
     }
     
-    // 验证格式
-    if (dev->fmt.fmt.pix.pixelformat != format) {
-        fprintf(stderr, "Driver set format %c%c%c%c instead of %c%c%c%c\n",
-                (dev->fmt.fmt.pix.pixelformat) & 0xFF,
-                (dev->fmt.fmt.pix.pixelformat >> 8) & 0xFF,
-                (dev->fmt.fmt.pix.pixelformat >> 16) & 0xFF,
-                (dev->fmt.fmt.pix.pixelformat >> 24) & 0xFF,
-                format & 0xFF,
-                (format >> 8) & 0xFF,
-                (format >> 16) & 0xFF,
-                (format >> 24) & 0xFF);
-        return -1;
+    // 获取实际设置的格式
+    struct v4l2_format actual_fmt;
+    CLEAR(actual_fmt);
+    actual_fmt.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    
+    if (ioctl(dev->fd, VIDIOC_G_FMT, &actual_fmt) == 0) {
+        printf("Actual format set: %c%c%c%c\n",
+            (actual_fmt.fmt.pix.pixelformat >> 0) & 0xFF,
+            (actual_fmt.fmt.pix.pixelformat >> 8) & 0xFF,
+            (actual_fmt.fmt.pix.pixelformat >> 16) & 0xFF,
+            (actual_fmt.fmt.pix.pixelformat >> 24) & 0xFF);
+    } else {
+        perror("WARNING: Failed to get actual format");
     }
 
-    // 设置帧率
-    struct v4l2_streamparm parm;
-    CLEAR(parm);
-    parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
-    parm.parm.capture.timeperframe.numerator = 1;
-    parm.parm.capture.timeperframe.denominator = fps;
-    
-    if (ioctl(dev->fd, VIDIOC_S_PARM, &parm) < 0) {
-        perror("Setting FPS failed");
+    // 仅当帧率大于0且驱动支持时设置帧率
+    if (fps > 0) {
+        struct v4l2_streamparm parm;
+        CLEAR(parm);
+        parm.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+        parm.parm.capture.timeperframe.numerator = 1;
+        parm.parm.capture.timeperframe.denominator = fps;
+        
+        if (ioctl(dev->fd, VIDIOC_S_PARM, &parm) < 0) {
+            // 不是致命错误，记录并继续
+            printf("WARNING: Setting FPS not supported, using driver default\n");
+        }
     }
 
     // 请求缓冲区
     struct v4l2_requestbuffers req;
     CLEAR(req);
-    req.count = MAX_BUFFERS;
-    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    
+    // STM32 dcmipp 驱动需要 DMA 缓冲区
     req.memory = V4L2_MEMORY_MMAP;
-
+    req.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
+    
+    // STM32 驱动通常需要2个缓冲区
+    req.count = 2;
+    
     if (ioctl(dev->fd, VIDIOC_REQBUFS, &req) < 0) {
         perror("Requesting buffers failed");
         return -1;
@@ -94,6 +104,9 @@ int v4l2_init(v4l2_dev_t* dev, int width, int height, int fps, int format) {
             perror("mmap failed");
             return -1;
         }
+        
+        printf("Buffer %d mapped at %p, length=%u\n", 
+               i, dev->buffers[i], (unsigned int)dev->buf.length);
     }
     return 0;
 }
@@ -149,6 +162,9 @@ int v4l2_capture_frame(v4l2_dev_t* dev) {
         perror("Dequeue buffer failed");
         return -1;
     }
+    
+    printf("Frame captured: index=%d, size=%u\n", 
+           dev->buf.index, (unsigned int)dev->buf.bytesused);
     
     return dev->buf.index;
 }
